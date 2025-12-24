@@ -3,6 +3,15 @@ import os
 import sys
 import json
 import traceback
+import io
+import wave
+import threading
+from dataclasses import dataclass
+from typing import Optional, List, Any
+
+import numpy as np
+import sounddevice as sd
+from pynput import keyboard
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -111,6 +120,79 @@ _G.Helper = {
     end
 }
 """
+
+
+@dataclass
+class PTTStartEvent:
+    pass
+
+
+@dataclass
+class PTTEndEvent:
+    audio_data: bytes
+
+
+@dataclass
+class TextInputEvent:
+    text: str
+
+
+class VoiceManager:
+    def __init__(self, event_queue: asyncio.Queue):
+        self.event_queue = event_queue
+        self.fs = 16000
+        self.audio_buffer: List[np.ndarray] = []
+        self.is_recording = False
+        self.loop = asyncio.get_event_loop()
+        self.ptt_key = keyboard.Key.cmd_r  # Right Command Key
+
+        # Initialize the keyboard listener in a separate thread
+        self.listener = keyboard.Listener(
+            on_press=self._on_press, on_release=self._on_release
+        )
+        self.listener.start()
+
+    def _audio_callback(self, indata, frames, time, status):
+        if self.is_recording:
+            self.audio_buffer.append(indata.copy())
+
+    def _on_press(self, key):
+        if key == self.ptt_key and not self.is_recording:
+            self.is_recording = True
+            self.audio_buffer = []
+            print("\n[LISTENING...]", end="", flush=True)
+            self.loop.call_soon_threadsafe(
+                self.event_queue.put_nowait, PTTStartEvent()
+            )
+
+    def _on_release(self, key):
+        if key == self.ptt_key and self.is_recording:
+            self.is_recording = False
+            print(" [DONE]")
+            audio_bytes = self._finalize_audio()
+            self.loop.call_soon_threadsafe(
+                self.event_queue.put_nowait, PTTEndEvent(audio_bytes)
+            )
+
+    def _finalize_audio(self) -> bytes:
+        if not self.audio_buffer:
+            return b""
+        audio_data = np.concatenate(self.audio_buffer, axis=0)
+        # Convert to int16 for WAV
+        audio_int16 = (audio_data * 32767).astype(np.int16)
+
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.fs)
+            wf.writeframes(audio_int16.tobytes())
+        return buffer.getvalue()
+
+    def start_mic_stream(self):
+        return sd.InputStream(
+            samplerate=self.fs, channels=1, callback=self._audio_callback
+        )
 
 
 class RobloxAIWrapper:
@@ -596,6 +678,73 @@ class RobloxAIWrapper:
             thinking_config=types.ThinkingConfig(include_thoughts=True),
         )
 
+    async def _process_request(self, session, config, history, content_parts):
+        """Internal method to run a Gemini generation cycle, can be cancelled."""
+        try:
+            history.append(types.Content(role="user", parts=content_parts))
+
+            while True:
+                print("\n[Thinking...]")
+                current_response_parts = []
+                tool_calls = []
+
+                async for (
+                    chunk
+                ) in await self.client.aio.models.generate_content_stream(
+                    model=self.model_id,
+                    contents=history,
+                    config=config,
+                ):
+                    if not chunk.candidates:
+                        continue
+
+                    for part in chunk.candidates[0].content.parts:
+                        current_response_parts.append(part)
+                        if part.thought:
+                            print(part.text, end="", flush=True)
+                        elif part.text:
+                            print(part.text, end="", flush=True)
+                        elif part.function_call:
+                            tool_calls.append(part.function_call)
+                            print(
+                                f"\n\n[*] AI Call: {part.function_call.name}({json.dumps(part.function_call.args)})"
+                            )
+
+                history.append(
+                    types.Content(
+                        role="model",
+                        parts=current_response_parts,
+                    )
+                )
+
+                if tool_calls:
+                    response_parts = []
+                    for tc in tool_calls:
+                        res_text = await self._handle_tool_call(session, tc)
+                        response_parts.append(
+                            types.Part.from_function_response(
+                                name=tc.name,
+                                response={"result": res_text},
+                            )
+                        )
+
+                    history.append(
+                        types.Content(role="tool", parts=response_parts)
+                    )
+                    continue
+                else:
+                    break
+
+            print("\n[√] Task Complete.")
+
+        except asyncio.CancelledError:
+            print("\n[!] Task Interrupted.")
+            # We don't append to history on cancellation to keep it clean
+            raise
+        except Exception as e:
+            print(f"\n[!] Error in process_request: {e}")
+            traceback.print_exc()
+
     async def run_interactive(self):
         print(f"[*] Starting Roblox MCP binary...")
         process, stderr_task, stdio_mgr = await self._setup_mcp_session()
@@ -622,95 +771,98 @@ class RobloxAIWrapper:
                     )
 
                     history = []
-                    print(f"\n=== Roblox AI Studio ({self.model_id}) ===")
-                    print("Enter your commands (or 'exit' to quit).")
+                    event_queue = asyncio.Queue()
+                    voice_manager = VoiceManager(event_queue)
 
-                    while True:
-                        try:
-                            user_input = input("\n> ")
-                            if user_input.lower() in ["exit", "quit", "q"]:
+                    print(f"\n=== Roblox AI Studio ({self.model_id}) ===")
+                    print(
+                        "Usage: Type commands or HOLD [Right Command] to speak."
+                    )
+                    print("Type 'exit' to quit.")
+
+                    loop = asyncio.get_running_loop()
+
+                    def input_thread():
+                        while True:
+                            try:
+                                text = input("\n> ")
+                                if text.lower() in ["exit", "quit", "q"]:
+                                    loop.call_soon_threadsafe(
+                                        event_queue.put_nowait,
+                                        TextInputEvent("exit"),
+                                    )
+                                    break
+                                loop.call_soon_threadsafe(
+                                    event_queue.put_nowait, TextInputEvent(text)
+                                )
+                            except EOFError:
                                 break
 
-                            history.append(
-                                types.Content(
-                                    role="user",
-                                    parts=[
-                                        types.Part.from_text(text=user_input)
-                                    ],
-                                )
-                            )
+                    threading.Thread(target=input_thread, daemon=True).start()
 
+                    async with asyncio.TaskGroup() as tg:
+                        current_task = None
+
+                        # Start the microphone stream
+                        with voice_manager.start_mic_stream():
                             while True:
-                                print("\n[Thinking...]")
-                                current_response_parts = []
-                                tool_calls = []
+                                event = await event_queue.get()
 
-                                async for (
-                                    chunk
-                                ) in await self.client.aio.models.generate_content_stream(
-                                    model=self.model_id,
-                                    contents=history,
-                                    config=config,
-                                ):
-                                    if not chunk.candidates:
+                                if isinstance(event, TextInputEvent):
+                                    if event.text == "exit":
+                                        if current_task:
+                                            current_task.cancel()
+                                        break
+
+                                    if current_task and not current_task.done():
+                                        current_task.cancel()
+
+                                    current_task = tg.create_task(
+                                        self._process_request(
+                                            session,
+                                            config,
+                                            history,
+                                            [
+                                                types.Part.from_text(
+                                                    text=event.text
+                                                )
+                                            ],
+                                        )
+                                    )
+
+                                elif isinstance(event, PTTStartEvent):
+                                    if current_task and not current_task.done():
+                                        print(
+                                            "\n[*] Interrupting for voice input..."
+                                        )
+                                        current_task.cancel()
+
+                                elif isinstance(event, PTTEndEvent):
+                                    if not event.audio_data:
+                                        print("[!] No audio captured.")
                                         continue
 
-                                    for part in chunk.candidates[
-                                        0
-                                    ].content.parts:
-                                        current_response_parts.append(part)
-                                        if part.thought:
-                                            print(part.text, end="", flush=True)
-                                        elif part.text:
-                                            print(part.text, end="", flush=True)
-                                        elif part.function_call:
-                                            tool_calls.append(
-                                                part.function_call
-                                            )
-                                            print(
-                                                f"\n\n[*] AI Call: {part.function_call.name}({json.dumps(part.function_call.args)})"
-                                            )
-
-                                history.append(
-                                    types.Content(
-                                        role="model",
-                                        parts=current_response_parts,
-                                    )
-                                )
-
-                                if tool_calls:
-                                    response_parts = []
-                                    for tc in tool_calls:
-                                        res_text = await self._handle_tool_call(
-                                            session, tc
-                                        )
-                                        response_parts.append(
-                                            types.Part.from_function_response(
-                                                name=tc.name,
-                                                response={"result": res_text},
-                                            )
-                                        )
-
-                                    history.append(
-                                        types.Content(
-                                            role="tool", parts=response_parts
+                                    current_task = tg.create_task(
+                                        self._process_request(
+                                            session,
+                                            config,
+                                            history,
+                                            [
+                                                types.Part.from_bytes(
+                                                    data=event.audio_data,
+                                                    mime_type="audio/wav",
+                                                ),
+                                                types.Part.from_text(
+                                                    text="Follow the instructions in this audio."
+                                                ),
+                                            ],
                                         )
                                     )
-                                    continue
-                                else:
-                                    break
-
-                            print()
-
-                        except KeyboardInterrupt:
-                            break
-                        except Exception as e:
-                            print(f"\n[!] Error: {e}")
-                            traceback.print_exc()
 
         except Exception as e:
-            print(f"\n[!] Fatal Error: {e}")
-            traceback.print_exc()
+            if not isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
+                print(f"\n[!] Fatal Error: {e}")
+                traceback.print_exc()
         finally:
             stderr_task.cancel()
             if "process" in locals() and process.returncode is None:

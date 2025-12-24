@@ -5,7 +5,10 @@ description = "Roblox Studio MCP integration with Gemini"
 dependencies = [
     "google-genai",
     "mcp",
+    "numpy>=2.4.0",
+    "pynput>=1.8.1",
     "python-dotenv",
+    "sounddevice>=0.5.3",
 ]
 
 [tool.uv]

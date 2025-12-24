@@ -5,6 +5,8 @@ Roblox AI Vibe Coder is an elite integration between **Roblox Studio** and **Goo
 ## 🌟 Key Features
 
 - **Proactive Engineering**: The agent doesn't just suggest code; it applies fixes, inspects logs, and verifies its own changes immediately.
+- **Voice-Powered Interaction (PTT)**: Hold the **Right Command** key to speak directly to the agent.
+- **Instant Interruption**: Don't wait for the agent to finish; you can interrupt a thinking loop or a tool execution at any time by speaking.
 - **Ground-Aware Building**: Integrated spatial logic ensures that spawned objects, NPCs, and assets automatically snap to the terrain surface.
 - **Rich Toolset**:
   - **Hierarchy Inspection**: Deep-dive into any Service tree.
@@ -18,9 +20,9 @@ Roblox AI Vibe Coder is an elite integration between **Roblox Studio** and **Goo
 
 The project consists of three main layers:
 
-1.  **Python Wrapper (`roblox_ai.py`)**: The brain. It manages the Gemini session, connects to the MCP server, and translates AI intent into Lua commands.
+1.  **Orchestrator (`roblox_ai.py`)**: An event-driven brain built with Python 3.11's `asyncio.TaskGroup`. It manages a central event queue for text and voice, handling real-time interruptions and Gemini 3 Flash multimodal sessions.
 2.  **Virtual Tool Layer (`tools/`)**: Definitions and Lua templates that map high-level AI actions (like `generate_procedural_terrain`) to optimized Luau execution.
-3.  **Roblox Studio MCP Server**: A binary (e.g., `rbx-studio-mcp`) that acts as a bridge, receiving Luau code from the Python wrapper and executing it directly inside the active Studio session.
+3.  **Roblox Studio MCP Server**: A binary (e.g., `rbx-studio-mcp`) that acts as a bridge, receiving Luau code from the orchestrator and executing it directly inside the active Studio session.
 
 ## 🚀 Getting Started
 
