@@ -31,7 +31,7 @@ The project consists of three main layers:
 1.  **Roblox Studio MCP**: You must have the Roblox Studio MCP bridge installed and running.
     - Default path expected: `/Applications/RobloxStudioMCP.app/Contents/MacOS/rbx-studio-mcp`
 2.  **Google Gemini API Key**: Obtain a key from [Google AI Studio](https://aistudio.google.com/).
-3.  **Python 3.10+**: Managed via `uv` or `pip`.
+3.  **Python 3.11+**: Required for `asyncio.TaskGroup` and structured concurrency.
 
 ### Installation
 
@@ -60,7 +60,12 @@ Start the interactive session:
 uv run roblox_ai.py
 ```
 
-Once connected, you can talk to the agent in natural language:
+**How to interact:**
+- **Type**: Enter commands normally at the `> ` prompt.
+- **Speak**: HOLD the **Right Command** key, speak your instruction, and release to send.
+- **Interrupt**: Press **Right Command** at any time to cancel the agent's current task and start a new voice command.
+
+Once connected, you can talk to the agent:
 - *"Generate a rolling hills landscape with a small village near the spawn."*
 - *"Debug why my zombie NPC isn't moving."*
 - *"Find all scripts that reference 'GoldValue' and update them to use the new 'Currency' module."*
