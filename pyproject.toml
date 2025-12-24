@@ -1,5 +1,5 @@
 [project]
-name = "roblox-vibe-code-speech"
+name = "roblox-ai-vibe-coder"
 version = "0.1.0"
 description = "Roblox Studio MCP integration with Gemini"
 dependencies = [
