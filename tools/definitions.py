@@ -514,4 +514,48 @@ def get_virtual_tool_definitions():
             description="Returns a high-level summary of the surroundings (relative to the player/spawn). Use this to 'see' where objects are located relative to you (in front of, behind, left, right).",
             parameters={"type": "object", "properties": {}},
         ),
+        types.FunctionDeclaration(
+            name="connect_parts",
+            description="Connects two parts mechanically using constraints (Welds, Hinges, Motors). VITAL for vehicles, doors, and moving machinery.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "part_a": {
+                        "type": "string",
+                        "description": "Path to the first part (e.g. 'game.Workspace.Car.Chassis').",
+                    },
+                    "part_b": {
+                        "type": "string",
+                        "description": "Path to the second part (e.g. 'game.Workspace.Car.Wheel').",
+                    },
+                    "constraint_type": {
+                        "type": "string",
+                        "enum": [
+                            "Weld",
+                            "Hinge",
+                            "Motor6D",
+                            "BallSocket",
+                            "Rope",
+                            "Spring",
+                            "Prismatic",
+                        ],
+                        "description": "The type of mechanical connection.",
+                        "default": "Weld",
+                    },
+                    "axis": {
+                        "type": "string",
+                        "enum": ["X", "Y", "Z"],
+                        "description": "For Hinges/Motors: The axis of rotation relative to Part A.",
+                        "default": "Y",
+                    },
+                    "anchor_mode": {
+                        "type": "string",
+                        "enum": ["Center", "ClosestPoint"],
+                        "description": "Where to place the attachments. 'Center' aligns centers. 'ClosestPoint' connects them at the touching surface.",
+                        "default": "Center",
+                    },
+                },
+                "required": ["part_a", "part_b", "constraint_type"],
+            },
+        ),
     ]
