@@ -201,7 +201,7 @@ def get_virtual_tool_definitions():
                     },
                     "value": {
                         "type": "string",
-                        "description": "The value to set. For Vector3 use 'x,y,z', for Color3 use 'r,g,b' or hex.",
+                        "description": "The value to set. For Vector3 use 'x,y,z'. For Color3, MANDATORY: Use 'r,g,b' on the 0-255 scale (e.g., '255,0,0' for red).",
                     },
                 },
                 "required": ["path", "property", "value"],
@@ -249,7 +249,7 @@ def get_virtual_tool_definitions():
                     },
                     "properties": {
                         "type": "object",
-                        "description": "Optional dictionary of properties to set immediately (e.g., {'Anchored': true, 'Transparency': 0.5}).",
+                        "description": "Optional dictionary of properties. For Color3, MANDATORY: Use 'r,g,b' on the 0-255 scale (e.g., {'Color': '255,255,255'}).",
                     },
                 },
                 "required": ["class_name", "parent_path"],
@@ -304,7 +304,7 @@ def get_virtual_tool_definitions():
                     },
                     "properties": {
                         "type": "object",
-                        "description": "A dictionary of property names and values to set.",
+                        "description": "A dictionary of property names and values. For Color3, MANDATORY: Use 'r,g,b' on the 0-255 scale.",
                     },
                 },
                 "required": ["path", "properties"],

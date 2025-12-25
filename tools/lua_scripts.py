@@ -313,7 +313,7 @@ local function convert(v, targetType)
         return Vector3.new(tonumber(x), tonumber(y), tonumber(z))
     elseif targetType == "Color3" then
         local r,g,b = v:match("([^,]+),([^,]+),([^,]+)")
-        if r then return Color3.new(tonumber(r), tonumber(g), tonumber(b)) end
+        if r then return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b)) end
         return Color3.fromHex(v)
     elseif targetType == "BrickColor" then
         local r,g,b = v:match("([^,]+),([^,]+),([^,]+)")
@@ -376,9 +376,13 @@ local function convert(v, targetType)
         local x,y,z = tostring(v):match("([^,]+),([^,]+),([^,]+)")
         if x then return Vector3.new(tonumber(x), tonumber(y), tonumber(z)) end
     elseif targetType == "Color3" then
-        if type(v) == "table" then return Color3.new(v.r or v[1], v.g or v[2], v.b or v[3]) end
+        if type(v) == "table" then 
+            return Color3.fromRGB(v.r or v[1], v.g or v[2], v.b or v[3])
+        end
         local r,g,b = tostring(v):match("([^,]+),([^,]+),([^,]+)")
-        if r then return Color3.new(tonumber(r), tonumber(g), tonumber(b)) end
+        if r then 
+            return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
+        end
         return Color3.fromHex(tostring(v))
     elseif targetType == "BrickColor" then
         if type(v) == "table" then return BrickColor.new(Color3.new(v.r or v[1], v.g or v[2], v.b or v[3])) end
@@ -526,9 +530,13 @@ local function convert(v, targetType)
         local x,y,z = tostring(v):match("([^,]+),([^,]+),([^,]+)")
         if x then return Vector3.new(tonumber(x), tonumber(y), tonumber(z)) end
     elseif targetType == "Color3" then
-        if type(v) == "table" then return Color3.new(v.r or v[1], v.g or v[2], v.b or v[3]) end
+        if type(v) == "table" then 
+            return Color3.fromRGB(v.r or v[1], v.g or v[2], v.b or v[3])
+        end
         local r,g,b = tostring(v):match("([^,]+),([^,]+),([^,]+)")
-        if r then return Color3.new(tonumber(r), tonumber(g), tonumber(b)) end
+        if r then 
+            return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
+        end
         return Color3.fromHex(tostring(v))
     elseif targetType == "BrickColor" then
         if type(v) == "table" then return BrickColor.new(Color3.new(v.r or v[1], v.g or v[2], v.b or v[3])) end
@@ -700,20 +708,21 @@ local success, result = pcall(function()
     if not search then error("Marketplace search returned nil for query: " .. query) end
     
     local items = {{}}
-    if type(search) == "userdata" and search.GetCurrentPage then
+    if type(search) == "table" and search.Results then
+        items = search.Results
+    elseif type(search) == "userdata" and search.GetCurrentPage then
         items = search:GetCurrentPage()
-    elseif type(search) == "table" then
-        if search.Results then
-            items = search.Results
-        else
-            items = search
-        end
+    else
+        items = search
     end
     
-    if #items == 0 then error("No results found for query: " .. query) end
+    -- Some API versions wrap the actual array in the first element
+    if type(items) == "table" and items[1] and type(items[1]) == "table" and items[1].Results then
+        items = items[1].Results
+    end
     
-    -- Robust key detection
-    local firstItem = items[1]
+    -- Robust key detection for the first item
+    local firstItem = type(items) == "table" and (items[1] or items) or {{}}
     local assetId = firstItem.AssetId or firstItem.AssetID or firstItem.Id or firstItem.ID
     
     if not assetId then
@@ -888,39 +897,38 @@ end)
 if success and result then
     local items = {{}}
     
-    -- Handle both CatalogPages (Userdata) and direct Table returns
-    if type(result) == "userdata" and result.GetCurrentPage then
+    -- Robust multi-level unpacking
+    if type(result) == "table" and result.Results then
+        items = result.Results
+    elseif type(result) == "userdata" and result.GetCurrentPage then
         items = result:GetCurrentPage()
-    elseif type(result) == "table" then
-        if result.Results then
-            items = result.Results
-        else
-            items = result
-        end
+    else
+        items = result
     end
 
-    if #items == 0 then
+    -- Some API versions wrap the actual array in the first element
+    if type(items) == "table" and items[1] and type(items[1]) == "table" and items[1].Results then
+        items = items[1].Results
+    end
+
+    if type(items) ~= "table" or #items == 0 then
         print("No results found.")
     else
         print("Top results:")
-        -- Use pairs to handle sparse tables or non-numeric keys safely
         local count = 0
-        for i, item in pairs(items) do
-            if count >= 10 then break end
-            count = count + 1
-            
-            -- Robust key detection (AssetId vs AssetID vs Id)
-            local id = item.AssetId or item.AssetID or item.Id or item.ID
-            local name = item.Name or item.name or "Unknown"
-            local creator = item.CreatorName or (item.Creator and item.Creator.Name) or "Unknown"
-            
-            if id then
-                print(string.format("- %s (ID: %d) - by %s", name, id, creator))
-            else
-                print("Found item with missing ID keys. Dumping keys:")
-                for k,v in pairs(item) do print("  Key:", k, "Val:", tostring(v)) end
+        for _, item in pairs(items) do
+            if type(item) == "table" then
+                local id = item.AssetId or item.AssetID or item.Id or item.ID
+                if id then
+                    count = count + 1
+                    local name = item.Name or item.name or "Unknown"
+                    local creator = item.CreatorName or (item.Creator and item.Creator.Name) or "Unknown"
+                    print(string.format("- %s (ID: %d) - by %s", name, id, creator))
+                end
             end
+            if count >= 10 then break end
         end
+        if count == 0 then print("0 valid assets found in results.") end
         print("TIP: Use 'insert_model' with the specific Name or Asset ID from this list.")
     end
 else

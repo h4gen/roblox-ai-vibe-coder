@@ -242,6 +242,52 @@ class RobloxAIWrapper:
                 items.append(f"{key_str} = {val_str}")
             return "{" + ", ".join(items) + "}"
 
+        def fix_path(path):
+            if not path or not isinstance(path, str):
+                return path
+
+            # List of common services that the AI might use without 'game.'
+            services = [
+                "Workspace",
+                "Lighting",
+                "ReplicatedStorage",
+                "ServerStorage",
+                "ServerScriptService",
+                "StarterGui",
+                "StarterPack",
+                "Players",
+                "LogService",
+                "RunService",
+                "SoundService",
+                "CollectionService",
+                "TweenService",
+                "Debris",
+            ]
+
+            path_lower = path.lower()
+            for s in services:
+                s_lower = s.lower()
+                if path_lower == s_lower or path_lower.startswith(
+                    s_lower + "."
+                ):
+                    suffix = path[len(s) :] if len(path) > len(s) else ""
+                    return f"game.{s}{suffix}"
+
+            if (
+                path == "game"
+                or path.startswith("game.")
+                or path.startswith("workspace")
+            ):
+                return path
+            return path
+
+        async def run_studio_code(lua_command):
+            # Prepend utils to all tool calls for consistency and global access
+            full_command = LUA_UTILS + lua_command
+            return await session.call_tool(
+                "run_code", {"command": full_command}
+            )
+
         mcp_res = None
         res_text = None
 
@@ -274,31 +320,25 @@ class RobloxAIWrapper:
             lua_command = INSPECT_SERVICE_LUA.format(
                 service=service, depth=depth
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "read_script_source":
-            script_path = tc.args["script_path"]
+            script_path = fix_path(tc.args["script_path"])
             print(f"[*] Reading script source: {script_path}...")
             lua_command = READ_SCRIPT_LUA.format(script_path=script_path)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "edit_script_source":
-            script_path = tc.args["script_path"]
+            script_path = fix_path(tc.args["script_path"])
             new_source = tc.args["new_source"]
             print(f"[*] Editing script: {script_path}...")
             lua_command = EDIT_SCRIPT_LUA.format(
                 script_path=script_path, new_source=new_source
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "patch_script_source":
-            script_path = tc.args["script_path"]
+            script_path = fix_path(tc.args["script_path"])
             search_string = tc.args["search_string"]
             # Handle potential AI hallucination of parameter name
             replace_string = tc.args.get("replace_string") or tc.args.get(
@@ -314,95 +354,73 @@ class RobloxAIWrapper:
                 search_string=search_string,
                 replace_string=replace_string,
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "get_studio_logs":
             count = tc.args.get("line_count", 50)
             print(f"[*] Fetching last {count} lines of Studio logs...")
             lua_command = GET_LOGS_LUA.format(count=count)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "clear_studio_logs":
             print(f"[*] Marking start of new debug session in logs...")
-            mcp_res = await session.call_tool(
-                "run_code", {"command": CLEAR_LOGS_LUA}
-            )
+            mcp_res = await run_studio_code(CLEAR_LOGS_LUA)
             res_text = "Debug session separator printed in Studio Output."
 
         elif tc.name == "search_scripts":
             pattern = tc.args["pattern"]
             print(f"[*] Searching scripts for: '{pattern}'...")
             lua_command = SEARCH_SCRIPTS_LUA.format(pattern=pattern)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "get_object_info":
-            path = tc.args["path"]
+            path = fix_path(tc.args["path"])
             print(f"[*] Fetching info for: {path}...")
             lua_command = GET_OBJECT_INFO_LUA.format(path=path)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "find_script_references":
             target_name = tc.args["target_name"]
             print(f"[*] Finding references for: '{target_name}'...")
             lua_command = FIND_REFS_LUA.format(target_name=target_name)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "manage_tags":
             action = tc.args["action"]
             tag = tc.args["tag"]
-            path = tc.args.get("path", "nil")
+            path = fix_path(tc.args.get("path", "nil"))
             print(f"[*] Managing tag '{tag}' (Action: {action})...")
             lua_command = MANAGE_TAGS_LUA.format(
                 path=path, action=action, tag=tag
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "run_unit_tests":
             print(f"[*] Running unit tests...")
-            mcp_res = await session.call_tool(
-                "run_code", {"command": RUN_TESTS_LUA}
-            )
+            mcp_res = await run_studio_code(RUN_TESTS_LUA)
 
         elif tc.name == "get_performance_stats":
             print(f"[*] Fetching performance stats...")
-            mcp_res = await session.call_tool(
-                "run_code", {"command": GET_STATS_LUA}
-            )
+            mcp_res = await run_studio_code(GET_STATS_LUA)
 
         elif tc.name == "get_properties":
-            path = tc.args["path"]
+            path = fix_path(tc.args["path"])
             print(f"[*] Fetching properties for: {path}...")
             lua_command = GET_PROPERTIES_LUA.format(path=path)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "set_property":
-            path = tc.args["path"]
+            path = fix_path(tc.args["path"])
             prop = tc.args["property"]
             val = tc.args["value"]
             print(f"[*] Setting {prop} on {path} to {val}...")
             lua_command = SET_PROPERTY_LUA.format(
                 path=path, property=prop, value=val
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "find_instances":
-            root = tc.args.get("root_path", "game")
+            root = fix_path(tc.args.get("root_path", "game"))
             cls = tc.args.get("class_name", "")
             pat = tc.args.get("name_pattern", "")
             print(
@@ -411,13 +429,11 @@ class RobloxAIWrapper:
             lua_command = FIND_INSTANCES_LUA.format(
                 root_path=root, class_name=cls, name_pattern=pat
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "create_instance":
             cls = tc.args["class_name"]
-            parent = tc.args["parent_path"]
+            parent = fix_path(tc.args["parent_path"])
             name = tc.args.get("name", cls)
             props = tc.args.get("properties", {})
             print(f"[*] Creating {cls} '{name}' in {parent}...")
@@ -427,49 +443,37 @@ class RobloxAIWrapper:
                 name=name,
                 props_table=dict_to_lua_table(props),
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "delete_instance":
-            path = tc.args["path"]
+            path = fix_path(tc.args["path"])
             print(f"[*] Deleting instance: {path}...")
             lua_command = DELETE_INSTANCE_LUA.format(path=path)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "raycast_check":
             origin = tc.args["origin"]
             direction = tc.args["direction"]
             print(f"[*] Casting ray from {origin}...")
             lua_command = RAYCAST_LUA.format(origin=origin, direction=direction)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "publish_game":
             print(f"[*] Publishing game to Roblox Cloud...")
-            mcp_res = await session.call_tool(
-                "run_code", {"command": PUBLISH_GAME_LUA}
-            )
+            mcp_res = await run_studio_code(PUBLISH_GAME_LUA)
 
         elif tc.name == "modify_instance":
-            path = tc.args["path"]
+            path = fix_path(tc.args["path"])
             props = tc.args["properties"]
             print(f"[*] Bulk modifying properties on {path}...")
             lua_command = MODIFY_INSTANCE_LUA.format(
                 path=path, props_table=dict_to_lua_table(props)
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "get_studio_state":
             print(f"[*] Fetching Studio state...")
-            mcp_res = await session.call_tool(
-                "run_code", {"command": GET_STUDIO_STATE_LUA}
-            )
+            mcp_res = await run_studio_code(GET_STUDIO_STATE_LUA)
 
         elif tc.name == "manipulate_terrain":
             action = tc.args["action"]
@@ -480,9 +484,7 @@ class RobloxAIWrapper:
             lua_command = MANIPULATE_TERRAIN_LUA.format(
                 action=action, position=pos, size=size, material=mat
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "generate_procedural_terrain":
             pos_str = tc.args["position"]
@@ -510,18 +512,14 @@ class RobloxAIWrapper:
                 material=mat,
                 biome=biome,
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "smart_setup_asset":
             query = tc.args["query"]
             pos = tc.args.get("position", "0,5,0")
             print(f"[*] Smart-setting up asset: {query} at {pos}...")
             lua_command = SMART_SETUP_LUA.format(query=query, position=pos)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "search_marketplace":
             query = tc.args["query"]
@@ -530,23 +528,19 @@ class RobloxAIWrapper:
             lua_command = SEARCH_MARKETPLACE_LUA.format(
                 query=query, asset_type=asset_type
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "reparent_instance":
-            path = tc.args["path"]
-            new_parent = tc.args["new_parent"]
+            path = fix_path(tc.args["path"])
+            new_parent = fix_path(tc.args["new_parent"])
             print(f"[*] Reparenting {path} to {new_parent}...")
             lua_command = REPARENT_INSTANCE_LUA.format(
                 path=path, new_parent=new_parent
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "scatter_objects":
-            path = tc.args["path"]
+            path = fix_path(tc.args["path"])
             count = tc.args.get("count", 10)
             radius = tc.args.get("radius", 100)
             align = str(tc.args.get("align_to_surface", True)).lower()
@@ -560,20 +554,16 @@ class RobloxAIWrapper:
                 align_to_surface=align,
                 random_rotation=rot,
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "inspect_marketplace_item":
             asset_id = tc.args["asset_id"]
             print(f"[*] Inspecting marketplace item: {asset_id}...")
             lua_command = MARKETPLACE_INFO_LUA.format(asset_id=asset_id)
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "create_timed_spawner":
-            template_path = tc.args["template_path"]
+            template_path = fix_path(tc.args["template_path"])
             container_name = tc.args.get("container_name", "SpawnedObjects")
             interval = tc.args.get("interval", 5)
             max_count = tc.args.get("max_count", 10)
@@ -589,23 +579,17 @@ class RobloxAIWrapper:
                 spawn_area_center=spawn_area_center,
                 spawn_radius=spawn_radius,
             )
-            mcp_res = await session.call_tool(
-                "run_code", {"command": lua_command}
-            )
+            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "get_spatial_summary":
             print(f"[*] Fetching relative spatial summary...")
-            mcp_res = await session.call_tool(
-                "run_code", {"command": GET_SPATIAL_SUMMARY_LUA}
-            )
+            mcp_res = await run_studio_code(GET_SPATIAL_SUMMARY_LUA)
 
         else:
             print(f"[*] Executing {tc.name} in Roblox Studio...")
             cmd = tc.args.get("command") or tc.args.get("code")
             if tc.name == "run_code" and cmd:
-                # Prepend utils to run_code
-                cmd = LUA_UTILS + cmd
-                mcp_res = await session.call_tool("run_code", {"command": cmd})
+                mcp_res = await run_studio_code(cmd)
             else:
                 # Ensure we use 'command' if it's an MCP tool that might expect it
                 args = tc.args.copy()
@@ -735,7 +719,7 @@ class RobloxAIWrapper:
                 "8. LIMITATIONS: Note that 'Technology' (ShadowMap/Future) cannot be set via script due to engine security. Don't try to change it; just work with what's there.\n"
                 "9. SPATIAL LOGIC: Use `get_spatial_summary` to understand surroundings. It provides human labels (e.g. 'front'), raw 'Offset' [X, Y, Z] in your Object-Space, and 'Rot' (Orientation in degrees). +X is Right, -X is Left, +Y is Up, -Y is Down, -Z is Front, +Z is Back. Orientation [0,0,0] means facing forward (-Z).\n"
                 "10. VISUAL AWARENESS: Before moving or placing objects, use `get_spatial_summary`. Use 'Rot' to understand which way an object is facing (e.g., to align a door with a wall).\n"
-                "11. DATA TYPES: Properties like TorsoColor require 'BrickColor'. Use 'BrickColor.new(color3_value)' if you only have RGB. Your Lua tools will try to auto-convert, but be explicit when possible.\n\n"
+                "11. DATA TYPES: Properties like TorsoColor require 'BrickColor'. For 'Color3', ALWAYS use the 0-255 RGB scale (e.g., '200, 50, 50'). NEVER use 0-1 fractional values for colors, as the engine now enforces the 0-255 standard for all tools.\n\n"
                 "WORKFLOW:\n"
                 "- If a unit isn't moving: Check 'Anchored' and 'HipHeight' using 'get_properties'. Verify if simulation is running with 'get_studio_state'.\n"
                 "- If building: Run 'generate_procedural_terrain' first. The system will automatically move the player's spawn to the new surface. Use 'smart_setup_asset' for characters and weapons; they will land on the ground automatically.\n"
