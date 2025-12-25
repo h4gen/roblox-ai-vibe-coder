@@ -14,7 +14,11 @@ Roblox AI Vibe Coder is an elite integration between **Roblox Studio** and **Goo
   - **Real-time Debugging**: Instant access to Studio logs and error detection with automatic log fetching on failure.
   - **World Manipulation**: Bulk property editing, terrain generation, and procedural scattering.
   - **Smart Asset Integration**: Search and setup marketplace items (weapons, NPCs, props) with one command.
-- **Gemini Thinking Support**: Leverages Gemini's reasoning capabilities to plan complex multi-step operations before execution.
+  - **System Architecture**: High-fidelity tools for UI generation, Lighting presets, and robust Game Logic patterns.
+  - **Mechanical Engineering**: Construct vehicles and machines using constraints (Welds, Hinges, Motors) with `connect_parts`.
+  - **Quality Assurance**: Built-in unit testing runner (`run_unit_tests`) and performance monitoring (`get_performance_stats`).
+  - **Codebase Navigation**: Instantly find logic across all scripts with `search_scripts`.
+  - **Gemini Thinking Support**: Leverages Gemini's reasoning capabilities to plan complex multi-step operations before execution.
 
 ## 🏗️ Architecture
 
@@ -73,15 +77,45 @@ Once connected, you can talk to the agent:
 
 ## 🛠️ Tooling Summary
 
+### 🌍 World & Environment
 | Tool | Description |
 | :--- | :--- |
-| `inspect_service` | Tree view of any Roblox service hierarchy. |
-| `read/edit/patch_script` | Full suite of script management tools. |
-| `get_studio_logs` | Fetch recent Output window logs (essential for debugging). |
 | `generate_procedural_terrain` | Noise-based terrain generation (Hills, Plains, etc.). |
+| `manipulate_terrain` | Precision terrain editing (Fill Block/Ball, Subtract). |
+| `scatter_objects` | Procedurally scatter assets with surface alignment. |
+| `configure_lighting` | One-click professional lighting presets (Day, Night, Horror). |
+| `raycast_check` | Debug physics and line-of-sight. |
+| `get_spatial_summary` | AI vision of the immediate surroundings. |
+
+### 🧱 Building & Assets
+| Tool | Description |
+| :--- | :--- |
 | `smart_setup_asset` | Search, insert, and auto-place Marketplace assets. |
-| `modify_instance` | Bulk property updates in a single turn. |
+| `search_marketplace` | Query the Roblox library for asset IDs. |
 | `create_timed_spawner` | Automated object spawning system. |
+| `connect_parts` | Create mechanical constraints (Welds, Motors, Hinges). |
+| `modify_instance` | Bulk property updates for styling. |
+| `reparent_instance` | Move objects (e.g., equip tools/scripts). |
+| `create_instance` | Recursive instance creation (great for custom trees). |
+
+### 💻 Scripting & Logic
+| Tool | Description |
+| :--- | :--- |
+| `read/edit/patch_script` | Full suite of script management tools. |
+| `inject_script_template` | Inject standard game patterns (Leaderstats, Doors). |
+| `search_scripts` | Find code across the entire project. |
+| `run_unit_tests` | Execute .spec verification scripts. |
+| `create_ui_layout` | Generate responsive UI hierarchies. |
+
+### 🔍 Debugging & Inspection
+| Tool | Description |
+| :--- | :--- |
+| `inspect_service` | Tree view of hierarchy and attributes. |
+| `get_studio_logs` | Fetch real-time Output window logs. |
+| `get_object_info` | Detailed property and tag inspection. |
+| `find_instances` | Search for objects by Name or ClassName. |
+| `get_performance_stats` | Monitor Memory, FPS, and Primitives. |
+| `manage_tags` | CollectionService tag management. |
 
 ---
 

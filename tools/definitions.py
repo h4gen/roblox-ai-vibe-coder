@@ -558,4 +558,78 @@ def get_virtual_tool_definitions():
                 "required": ["part_a", "part_b", "constraint_type"],
             },
         ),
+        types.FunctionDeclaration(
+            name="configure_lighting",
+            description="Applies professional lighting presets (Atmosphere, Sky, PostEffects) to the game. Use this to instantly upgrade visuals.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "preset": {
+                        "type": "string",
+                        "enum": [
+                            "RealisticDay",
+                            "CinematicNight",
+                            "DreamySunset",
+                            "Horror",
+                            "NeutralStudio",
+                        ],
+                        "description": "The visual style to apply.",
+                        "default": "RealisticDay",
+                    }
+                },
+                "required": ["preset"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="create_ui_layout",
+            description="Creates a high-quality, responsive UI layout (e.g., Grid Menu, HUD, Modal). Handles scaling and positioning automatically.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "parent_path": {
+                        "type": "string",
+                        "description": "Where to create the UI (e.g., 'game.StarterGui').",
+                    },
+                    "layout_type": {
+                        "type": "string",
+                        "enum": [
+                            "ScreenGui",
+                            "CenteredModal",
+                            "GridMenu",
+                            "HUD",
+                        ],
+                        "description": "The type of UI structure to generate.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "The name of the main frame.",
+                    },
+                },
+                "required": ["parent_path", "layout_type", "name"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="inject_script_template",
+            description="Injects a standard, error-free script template (e.g., Leaderstats, Door, KillPart) into a target script.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The full path to the script to overwrite (e.g., 'game.ServerScriptService.GameManager').",
+                    },
+                    "template_name": {
+                        "type": "string",
+                        "enum": [
+                            "Leaderstats",
+                            "TouchKill",
+                            "ClickDoor",
+                            "AutoRotate",
+                        ],
+                        "description": "The template logic to inject.",
+                    },
+                },
+                "required": ["path", "template_name"],
+            },
+        ),
     ]
