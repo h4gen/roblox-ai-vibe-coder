@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Optional, List, Any
 
 import numpy as np
-import sounddevice as sd
+import sounddevice as sd  #
 from pynput import keyboard
 from google import genai
 from google.genai import types
@@ -28,7 +28,6 @@ from tools.lua_scripts import (
     CLEAR_LOGS_LUA,
     SEARCH_SCRIPTS_LUA,
     GET_OBJECT_INFO_LUA,
-    FIND_REFS_LUA,
     MANAGE_TAGS_LUA,
     RUN_TESTS_LUA,
     GET_STATS_LUA,
@@ -45,7 +44,6 @@ from tools.lua_scripts import (
     GENERATE_TERRAIN_LUA,
     SMART_SETUP_LUA,
     SCATTER_LUA,
-    MARKETPLACE_INFO_LUA,
     CREATE_SPAWNER_LUA,
     GET_SPATIAL_SUMMARY_LUA,
     SEARCH_MARKETPLACE_LUA,
@@ -54,58 +52,6 @@ from tools.lua_scripts import (
 
 # Load environment variables from .env
 load_dotenv()
-
-LUA_UTILS = """
-local function safe_print(...)
-    local args = {...}
-    local result = {}
-    for i, v in ipairs(args) do
-            table.insert(result, tostring(v))
-    end
-    print(table.concat(result, " "))
-end
-
-_G.Helper = {
-    getGround = function(pos)
-        local params = RaycastParams.new()
-        params.FilterDescendantsInstances = {workspace:FindFirstChild("Baseplate")}
-        params.FilterType = Enum.RaycastFilterType.Include
-        local ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), params)
-        if not ray then
-            ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0))
-        end
-        return ray and ray.Position or pos
-    end,
-    scatter = function(template, count, range, parent)
-        if not template then return end
-        for i = 1, count do
-            local clone = template:Clone()
-            local x = (math.random() - 0.5) * range * 2
-            local z = (math.random() - 0.5) * range * 2
-            clone.Parent = parent or workspace
-            local ground = _G.Helper.getGround(Vector3.new(x, 0, z))
-            if clone:IsA("Model") then
-                clone:MoveTo(ground)
-            else
-                clone.Position = ground + Vector3.new(0, clone.Size.Y/2, 0)
-            end
-        end
-    end,
-    setBaseplate = function(size, color, material)
-        local b = workspace:FindFirstChild("Baseplate")
-        if not b then
-            b = Instance.new("Part")
-            b.Name = "Baseplate"
-            b.Parent = workspace
-        end
-        b.Size = typeof(size) == "Vector3" and size or Vector3.new(size, 10, size)
-        b.Color = color or b.Color
-        b.Material = material or b.Material
-        b.Anchored = true
-        b.Position = Vector3.new(0, -b.Size.Y/2, 0)
-    end
-}
-"""
 
 
 @dataclass
@@ -238,6 +184,13 @@ class RobloxAIWrapper:
                     val_str = f"[===[{v}]===]"
                 elif isinstance(v, dict):
                     val_str = dict_to_lua_table(v)
+                elif isinstance(v, list):  # Handle children lists
+                    # For list of objects, we need array-like table { [1]=... }
+                    val_str = (
+                        "{"
+                        + ", ".join([dict_to_lua_table(item) for item in v])
+                        + "}"
+                    )
                 else:
                     val_str = f'"{str(v)}"'
                 items.append(f"{key_str} = {val_str}")
@@ -283,11 +236,7 @@ class RobloxAIWrapper:
             return path
 
         async def run_studio_code(lua_command):
-            # Prepend utils to all tool calls for consistency and global access
-            full_command = LUA_UTILS + lua_command
-            return await session.call_tool(
-                "run_code", {"command": full_command}
-            )
+            return await session.call_tool("run_code", {"command": lua_command})
 
         mcp_res = None
         res_text = None
@@ -358,12 +307,6 @@ class RobloxAIWrapper:
             lua_command = GET_OBJECT_INFO_LUA.format(path=path)
             mcp_res = await run_studio_code(lua_command)
 
-        elif tc.name == "find_script_references":
-            target_name = tc.args["target_name"]
-            print(f"[*] Finding references for: '{target_name}'...")
-            lua_command = FIND_REFS_LUA.format(target_name=target_name)
-            mcp_res = await run_studio_code(lua_command)
-
         elif tc.name == "manage_tags":
             action = tc.args["action"]
             tag = tc.args["tag"]
@@ -415,12 +358,33 @@ class RobloxAIWrapper:
             parent = fix_path(tc.args["parent_path"])
             name = tc.args.get("name", cls)
             props = tc.args.get("properties", {})
-            print(f"[*] Creating {cls} '{name}' in {parent}...")
+            children = tc.args.get("children", [])
+
+            # Helper to convert list of children to Lua table string
+            def children_to_lua(kids):
+                if not kids:
+                    return "{}"
+                items = []
+                for kid in kids:
+                    # Recursive conversion
+                    k_cls = kid.get("class_name")
+                    k_name = kid.get("name", k_cls)
+                    k_props = dict_to_lua_table(kid.get("properties", {}))
+                    k_kids = children_to_lua(kid.get("children", []))
+                    items.append(
+                        f'{{class_name="{k_cls}", name="{k_name}", properties={k_props}, children={k_kids}}}'
+                    )
+                return "{" + ", ".join(items) + "}"
+
+            print(
+                f"[*] Creating {cls} '{name}' in {parent} (with {len(children)} children)..."
+            )
             lua_command = CREATE_INSTANCE_LUA.format(
                 class_name=cls,
                 parent_path=parent,
                 name=name,
                 props_table=dict_to_lua_table(props),
+                children_table=children_to_lua(children),
             )
             mcp_res = await run_studio_code(lua_command)
 
@@ -533,12 +497,6 @@ class RobloxAIWrapper:
                 align_to_surface=align,
                 random_rotation=rot,
             )
-            mcp_res = await run_studio_code(lua_command)
-
-        elif tc.name == "inspect_marketplace_item":
-            asset_id = tc.args["asset_id"]
-            print(f"[*] Inspecting marketplace item: {asset_id}...")
-            lua_command = MARKETPLACE_INFO_LUA.format(asset_id=asset_id)
             mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "create_timed_spawner":
@@ -688,22 +646,22 @@ class RobloxAIWrapper:
             system_instruction=(
                 "You are an Elite Roblox Studio Game Engineer and AI Agent. You don't just write code; you build and debug live game worlds.\n\n"
                 "YOUR CORE PRINCIPLES:\n"
-                "1. TRUST YOUR TOOLS: Your building tools (`smart_setup_asset`, `generate_procedural_terrain`, `create_instance`) now have built-in Ground-Awareness. They automatically snap objects to the terrain surface. You no longer need to calculate complex Y-coordinates. Focus on X and Z; the system handles the floor.\n"
-                "2. EFFICIENCY: Use 'modify_instance' to style objects in a single turn. Use 'smart_setup_asset' to search and setup weapons/NPCs in ONE turn. Use 'create_timed_spawner' to automate object spawning instead of writing manual scripts.\n"
-                "3. CONTEXT AWARENESS: Use 'get_studio_state' to see if you are in Edit Mode or Play Mode. Use 'get_spatial_summary' frequently to get a human-like description of your surroundings. Remember: objects spawned by scripts only exist in Play Mode.\n"
-                "4. MARKETPLACE STRATEGY: Use 'smart_setup_asset' for complex items. If unsure about an asset, use 'inspect_marketplace_item' first to see its description and class contents.\n"
-                "5. TERRAIN & ENVIRONMENT: Use 'generate_procedural_terrain' for large landscapes. The system will automatically move the player's spawn to the new surface. Use 'scatter_objects' to distribute environmental props automatically.\n"
-                "6. GENERALIZATION: Build systems that work for any game type. Favor atomic tools over monolithic Lua scripts. Use generic containers and naming conventions.\n"
-                "7. DEBUGGING: Be proactive. After editing any script, you MUST verify the logs using 'get_studio_logs'. Do not wait for the user. If an asset fails to load (check logs!) or a property seems wrong, use 'get_studio_state' or 'get_studio_logs' to see the exact error.\n"
-                "8. LIMITATIONS: Note that 'Technology' (ShadowMap/Future) cannot be set via script due to engine security. Don't try to change it; just work with what's there.\n"
-                "9. SPATIAL LOGIC: Use `get_spatial_summary` to understand surroundings. It provides human labels (e.g. 'front'), raw 'Offset' [X, Y, Z] in your Object-Space, and 'Rot' (Orientation in degrees). +X is Right, -X is Left, +Y is Up, -Y is Down, -Z is Front, +Z is Back. Orientation [0,0,0] means facing forward (-Z).\n"
-                "10. VISUAL AWARENESS: Before moving or placing objects, use `get_spatial_summary`. Use 'Rot' to understand which way an object is facing (e.g., to align a door with a wall).\n"
-                "11. DATA TYPES: Properties like TorsoColor require 'BrickColor'. For 'Color3', ALWAYS use the 0-255 RGB scale (e.g., '200, 50, 50'). NEVER use 0-1 fractional values for colors, as the engine now enforces the 0-255 standard for all tools.\n\n"
+                "1. SMART CREATION: Use `create_instance` with the `children` parameter to build entire UI hierarchies (ScreenGui -> Frame -> TextLabel) in a SINGLE step. Do not create objects one by one.\n"
+                "2. TRUST YOUR TOOLS: Your building tools (`smart_setup_asset`, `create_instance`) have built-in Ground-Awareness. They automatically snap objects to the terrain surface. You do NOT need to calculate Y-coordinates for placement. Focus on X and Z.\n"
+                "3. FORGIVING SYNTAX: You can use simple property values. Send 'Red' instead of 'Color3.fromRGB(255,0,0)'. Send '{0.5,0,0.5,0}' for UDim2. The system handles the conversion for you.\n"
+                "4. ASSET WORKFLOW: \n"
+                "   - To use an asset: 1) `search_marketplace('Sword')`. 2) Pick an ID. 3) `smart_setup_asset(id=...)`.\n"
+                "   - `smart_setup_asset` AUTOMATICALLY puts Tools in StarterPack and NPCs in ServerStorage. You rarely need to move them manually.\n"
+                "   - Only use `reparent_instance` if you have a specific non-standard goal (e.g., 'Give this specific Zombie a Sword').\n"
+                "5. CONTEXT AWARENESS: Use 'get_studio_state' to see if you are in Edit Mode or Play Mode. Use 'get_spatial_summary' frequently to 'see' the world.\n"
+                "6. DEBUGGING: Be proactive. If an asset fails to load or a property seems wrong, check the logs. Use `edit_script_source` to fix bugs immediately.\n"
+                "7. SPATIAL LOGIC: Use `get_spatial_summary` to understand surroundings. +X is Right, -X is Left, +Y is Up, -Y is Down, -Z is Front, +Z is Back.\n"
+                "8. SCRIPT EDITING: The system now pre-validates syntax. If you make a typo, the tool will reject the edit and tell you why. Fix it and try again.\n\n"
                 "WORKFLOW:\n"
-                "- If a unit isn't moving: Check 'Anchored' and 'HipHeight' using 'get_properties'. Verify if simulation is running with 'get_studio_state'.\n"
-                "- If building: Run 'generate_procedural_terrain' first. The system will automatically move the player's spawn to the new surface. Use 'smart_setup_asset' for characters and weapons; they will land on the ground automatically.\n"
-                "- Deployment: Use 'publish_game' when the user is happy. INFORM them it requires manual confirmation (y/n).\n\n"
-                "CRITICAL: Be proactive. If you find a bug, FIX IT immediately using your manipulation tools. Don't just suggest the fix; apply it."
+                "- UI Design: Create the full structure in one `create_instance` call.\n"
+                "- Building: Use `generate_procedural_terrain` then `smart_setup_asset`. Objects will land on the ground automatically.\n"
+                "- Deployment: Use 'publish_game' when the user is happy (requires confirmation).\n\n"
+                "CRITICAL: You are an expert. Don't ask for permission to use standard patterns. Just build it."
             ),
             thinking_config=types.ThinkingConfig(
                 include_thoughts=True,

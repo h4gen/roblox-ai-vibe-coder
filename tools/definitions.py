@@ -125,20 +125,6 @@ def get_virtual_tool_definitions():
             },
         ),
         types.FunctionDeclaration(
-            name="find_script_references",
-            description="Finds all scripts that reference or require a specific module/variable.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "target_name": {
-                        "type": "string",
-                        "description": "The name of the module or variable to find references for.",
-                    }
-                },
-                "required": ["target_name"],
-            },
-        ),
-        types.FunctionDeclaration(
             name="manage_tags",
             description="Adds, removes, or lists objects with a specific CollectionService tag.",
             parameters={
@@ -231,7 +217,7 @@ def get_virtual_tool_definitions():
         ),
         types.FunctionDeclaration(
             name="create_instance",
-            description="Creates a new instance of a class, sets its properties, and parents it. Use this to create and style in ONE turn.",
+            description="Creates a new instance of a class, sets its properties, and parents it. Supports recursive creation of children (great for UI).",
             parameters={
                 "type": "object",
                 "properties": {
@@ -250,6 +236,11 @@ def get_virtual_tool_definitions():
                     "properties": {
                         "type": "object",
                         "description": "Optional dictionary of properties. For Color3, MANDATORY: Use 'r,g,b' on the 0-255 scale (e.g., {'Color': '255,255,255'}).",
+                    },
+                    "children": {
+                        "type": "array",
+                        "description": "Optional list of children to create inside this instance. Each child follows the same structure as create_instance arguments (class_name, name, properties, children).",
+                        "items": {"type": "object"},
                     },
                 },
                 "required": ["class_name", "parent_path"],
@@ -463,7 +454,7 @@ def get_virtual_tool_definitions():
         ),
         types.FunctionDeclaration(
             name="reparent_instance",
-            description="Moves an instance to a new parent (e.g., move a Tool to StarterPack).",
+            description="Moves an instance to a new parent. Use this for specific tasks like 'Give a Zombie a Sword' (move Tool to NPC) or 'Equip a Car' (move Script to Vehicle), where 'smart_setup_asset' might act too generally.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -477,20 +468,6 @@ def get_virtual_tool_definitions():
                     },
                 },
                 "required": ["path", "new_parent"],
-            },
-        ),
-        types.FunctionDeclaration(
-            name="inspect_marketplace_item",
-            description="Returns detailed metadata (description, tags, creator) and a summary of contents (class counts) for a marketplace item before permanent insertion.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "asset_id": {
-                        "type": "integer",
-                        "description": "The ID of the marketplace asset.",
-                    }
-                },
-                "required": ["asset_id"],
             },
         ),
         types.FunctionDeclaration(

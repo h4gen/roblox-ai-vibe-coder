@@ -35,8 +35,15 @@ end
 EDIT_SCRIPT_LUA = """
 local target = {script_path}
 if target and (target:IsA("LuaSourceContainer")) then
-    target.Source = [===[{new_source}]===]
-    print("Successfully updated script: " .. target.Name)
+    -- Basic Syntax Check
+    local newSource = [===[{new_source}]===]
+    local func, err = loadstring(newSource)
+    if not func then
+        print("Error: Syntax error in new source code. Change NOT applied.\\n" .. err)
+    else
+        target.Source = newSource
+        print("Successfully updated script: " .. target.Name)
+    end
 else
     print("Error: Could not find script at path '{script_path}' to edit.")
 end
@@ -52,8 +59,15 @@ if target and (target:IsA("LuaSourceContainer")) then
     -- Use string.find with 'true' for literal search (no patterns)
     local startIdx, endIdx = string.find(oldSource, search, 1, true)
     if startIdx then
-        target.Source = string.sub(oldSource, 1, startIdx - 1) .. replace .. string.sub(oldSource, endIdx + 1)
-        print("Successfully patched script: " .. target.Name)
+        local newSource = string.sub(oldSource, 1, startIdx - 1) .. replace .. string.sub(oldSource, endIdx + 1)
+        -- Syntax Check
+        local func, err = loadstring(newSource)
+        if not func then
+             print("Error: Syntax error in patched source code. Change NOT applied.\\n" .. err)
+        else
+            target.Source = newSource
+            print("Successfully patched script: " .. target.Name)
+        end
     else
         print("Error: Search string not found in script (literal match failed).")
     end
@@ -141,7 +155,7 @@ local output = "--- Marketplace Search Results for '" .. query .. "' ---\\n"
 
 if success then
     if result then
-        local items = {}
+        local items = {{}}
         if type(result) == "table" then
             if result.Results then items = result.Results
             elseif result[1] and result[1].Results then items = result[1].Results
@@ -166,28 +180,6 @@ if success then
 else
     print("Error searching marketplace: " .. tostring(result))
 end
-"""
-
-FIND_REFS_LUA = """
-local targetName = "{target_name}":lower()
-local results = "--- References found for '" .. targetName .. "' ---\\n"
-local count = 0
-
-local function searchRefs(obj)
-    if obj:IsA("LuaSourceContainer") then
-        local source = obj.Source:lower()
-        if source:find("require%(" .. targetName .. "%)") or source:find(targetName) then
-            results = results .. obj:GetFullName() .. "\\n"
-            count = count + 1
-        end
-    end
-    for _, child in ipairs(obj:GetChildren()) do
-        searchRefs(child)
-    end
-end
-
-searchRefs(game)
-print(results .. "Total references found: " .. count)
 """
 
 MANAGE_TAGS_LUA = """
@@ -277,7 +269,14 @@ local classProps = {{
     SurfaceLight = {{"Angle", "Brightness", "Color", "Range", "Shadows", "Enabled"}},
     Sound = {{"SoundId", "Volume", "PlaybackSpeed", "Playing", "Looped", "TimePosition"}},
     DataModel = {{"PlaceId", "GameId", "JobId"}},
-    Terrain = {{"Decoration", "GrassLength", "WaterColor", "WaterTransparency", "WaterWaveSize", "WaterWaveSpeed"}}
+    Terrain = {{"Decoration", "GrassLength", "WaterColor", "WaterTransparency", "WaterWaveSize", "WaterWaveSpeed"}},
+    GuiObject = {{"Size", "Position", "BackgroundColor3", "BackgroundTransparency", "Visible", "ZIndex", "LayoutOrder", "AnchorPoint"}},
+    TextLabel = {{"Text", "TextColor3", "TextSize", "Font", "TextTransparency", "TextStrokeTransparency", "TextXAlignment", "TextYAlignment"}},
+    TextButton = {{"Text", "TextColor3", "TextSize", "Font", "AutoButtonColor"}},
+    ImageLabel = {{"Image", "ImageColor3", "ImageTransparency", "ScaleType", "TileSize"}},
+    ScrollingFrame = {{"CanvasSize", "CanvasPosition", "ScrollBarThickness", "ScrollBarImageColor3"}},
+    UIListLayout = {{"Padding", "FillDirection", "HorizontalAlignment", "VerticalAlignment", "SortOrder"}},
+    UIGridLayout = {{"CellSize", "CellPadding", "FillDirection", "FillDirectionMaxCells"}}
 }}
 
 local toCheck = {{"Name", "ClassName", "Parent"}}
@@ -315,22 +314,51 @@ local valRaw = "{value}"
 if not target then print("Error: Object not found.") return end
 
 local function convert(v, targetType)
-    if targetType == "boolean" then return v == "true" or v == "1"
+    if targetType == "boolean" then return v == true or v == "true" or v == "1"
     elseif targetType == "number" then return tonumber(v)
+    elseif targetType == "string" then return tostring(v)
     elseif targetType == "Vector3" then
-        local x,y,z = v:match("([^,]+),([^,]+),([^,]+)")
-        return Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+        if type(v) == "table" then return Vector3.new(v.x or v[1], v.y or v[2], v.z or v[3]) end
+        local x,y,z = tostring(v):match("([^,]+),([^,]+),([^,]+)")
+        if x then return Vector3.new(tonumber(x), tonumber(y), tonumber(z)) end
     elseif targetType == "Color3" then
-        local r,g,b = v:match("([^,]+),([^,]+),([^,]+)")
+        if type(v) == "table" then 
+            return Color3.fromRGB(v.r or v[1], v.g or v[2], v.b or v[3])
+        end
+        local s = tostring(v)
+        local r,g,b = s:match("([^,]+),([^,]+),([^,]+)")
         if r then return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b)) end
-        return Color3.fromHex(v)
+        if s:sub(1,1) == "#" then return Color3.fromHex(s) end
+        
+        -- Smart Color Names
+        local names = {{Red=Color3.new(1,0,0), Green=Color3.new(0,1,0), Blue=Color3.new(0,0,1), White=Color3.new(1,1,1), Black=Color3.new(0,0,0), Yellow=Color3.new(1,1,0), Cyan=Color3.new(0,1,1), Magenta=Color3.new(1,0,1), Grey=Color3.new(0.5,0.5,0.5)}}
+        if names[s] then return names[s] end
+        
+        return Color3.fromHex(s) -- Try hex as fallback
+        
     elseif targetType == "BrickColor" then
-        local r,g,b = v:match("([^,]+),([^,]+),([^,]+)")
-        if r then return BrickColor.new(Color3.new(tonumber(r), tonumber(g), tonumber(b))) end
-        return BrickColor.new(v)
-    elseif targetType == "CFrame" then
+        if type(v) == "table" then return BrickColor.new(Color3.new(v.r or v[1], v.g or v[2], v.b or v[3])) end
+        return BrickColor.new(tostring(v))
+        
+    elseif targetType == "UDim2" then
+        if type(v) == "table" then return UDim2.new(v[1], v[2], v[3], v[4]) end
+        local s = tostring(v):gsub("[{{}}]", "") -- Remove braces
         local parts = {{}}
-        for p in v:gmatch("([^,]+)") do table.insert(parts, tonumber(p)) end
+        for p in s:gmatch("([^,]+)") do table.insert(parts, tonumber(p)) end
+        if #parts == 4 then return UDim2.new(parts[1], parts[2], parts[3], parts[4]) end
+        return UDim2.new(0,0,0,0)
+        
+    elseif typeof(targetType) == "EnumItem" then
+        -- Smart Enum matching
+        local enumName = tostring(targetType.EnumType)
+        local success, val = pcall(function() return Enum[enumName][v] end)
+        if success then return val end
+        return v
+        
+    elseif targetType == "CFrame" then
+        if type(v) == "table" then return CFrame.new(unpack(v)) end
+        local parts = {{}}
+        for p in tostring(v):gmatch("([^,]+)") do table.insert(parts, tonumber(p)) end
         if #parts == 3 then return CFrame.new(parts[1], parts[2], parts[3]) end
         if #parts >= 12 then return CFrame.new(unpack(parts)) end
         return CFrame.new()
@@ -375,11 +403,33 @@ print(results .. "\\nTotal found: " .. count)
 CREATE_INSTANCE_LUA = """
 local parent = {parent_path}
 local props = {props_table}
+local children = {children_table} -- New: Recursive children list
+
 if not parent then print("Error: Parent not found.") return end
+
+local function getGround(pos)
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {{workspace:FindFirstChild("Baseplate")}}
+    params.FilterType = Enum.RaycastFilterType.Include
+    local ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), params)
+    if not ray then
+        -- Fallback: Check for Terrain
+        local tParams = RaycastParams.new()
+        tParams.FilterDescendantsInstances = {{workspace.Terrain}}
+        tParams.FilterType = Enum.RaycastFilterType.Include
+        ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), tParams)
+    end
+    if not ray then
+        -- Last resort: Just check EVERYTHING except the object itself
+        ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0))
+    end
+    return ray and ray.Position or pos
+end
 
 local function convert(v, targetType)
     if targetType == "boolean" then return v == true or v == "true" or v == "1"
     elseif targetType == "number" then return tonumber(v)
+    elseif targetType == "string" then return tostring(v)
     elseif targetType == "Vector3" then
         if type(v) == "table" then return Vector3.new(v.x or v[1], v.y or v[2], v.z or v[3]) end
         local x,y,z = tostring(v):match("([^,]+),([^,]+),([^,]+)")
@@ -388,16 +438,30 @@ local function convert(v, targetType)
         if type(v) == "table" then 
             return Color3.fromRGB(v.r or v[1], v.g or v[2], v.b or v[3])
         end
-        local r,g,b = tostring(v):match("([^,]+),([^,]+),([^,]+)")
-        if r then 
-            return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
-        end
-        return Color3.fromHex(tostring(v))
+        local s = tostring(v)
+        local r,g,b = s:match("([^,]+),([^,]+),([^,]+)")
+        if r then return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b)) end
+        if s:sub(1,1) == "#" then return Color3.fromHex(s) end
+        
+        local names = {{Red=Color3.new(1,0,0), Green=Color3.new(0,1,0), Blue=Color3.new(0,0,1), White=Color3.new(1,1,1), Black=Color3.new(0,0,0), Yellow=Color3.new(1,1,0), Cyan=Color3.new(0,1,1), Magenta=Color3.new(1,0,1), Grey=Color3.new(0.5,0.5,0.5)}}
+        if names[s] then return names[s] end
+        
+        return Color3.fromHex(s)
     elseif targetType == "BrickColor" then
         if type(v) == "table" then return BrickColor.new(Color3.new(v.r or v[1], v.g or v[2], v.b or v[3])) end
-        local r,g,b = tostring(v):match("([^,]+),([^,]+),([^,]+)")
-        if r then return BrickColor.new(Color3.new(tonumber(r), tonumber(g), tonumber(b))) end
         return BrickColor.new(tostring(v))
+    elseif targetType == "UDim2" then
+        if type(v) == "table" then return UDim2.new(v[1], v[2], v[3], v[4]) end
+        local s = tostring(v):gsub("[{{}}]", "")
+        local parts = {{}}
+        for p in s:gmatch("([^,]+)") do table.insert(parts, tonumber(p)) end
+        if #parts == 4 then return UDim2.new(parts[1], parts[2], parts[3], parts[4]) end
+        return UDim2.new(0,0,0,0)
+    elseif typeof(targetType) == "EnumItem" then
+        local enumName = tostring(targetType.EnumType)
+        local success, val = pcall(function() return Enum[enumName][v] end)
+        if success then return val end
+        return v
     elseif targetType == "CFrame" then
         if type(v) == "table" then return CFrame.new(unpack(v)) end
         local parts = {{}}
@@ -409,34 +473,50 @@ local function convert(v, targetType)
     return v
 end
 
-local s, obj = pcall(function()
-    local newObj = Instance.new("{class_name}")
-    newObj.Name = "{name}"
+local function createRecursive(def, p)
+    local cls = def.class_name
+    local name = def.name or cls
+    local properties = def.properties or {{}}
+    local kids = def.children or {{}}
     
-    for prop, val in pairs(props) do
-        local currentVal = newObj[prop]
-        newObj[prop] = convert(val, typeof(currentVal))
-    end
+    local newObj = Instance.new(cls)
+    newObj.Name = name
     
-    newObj.Parent = parent
-    
-    -- Auto-grounding for Workspace objects
-    if parent == workspace or parent:IsDescendantOf(workspace) then
-        if newObj:IsA("BasePart") or newObj:IsA("Model") then
-            local currentPos = newObj:IsA("Model") and newObj:GetPivot().Position or newObj.Position
-            -- Only ground if Y is default/low or explicitly requested
-            if currentPos.Y < 10 then
-                local groundedPos = _G.Helper.getGround(currentPos)
-                if newObj:IsA("Model") then
-                    newObj:PivotTo(CFrame.new(groundedPos + Vector3.new(0, 2, 0)))
-                else
-                    newObj.Position = groundedPos + Vector3.new(0, newObj.Size.Y/2, 0)
-                end
-            end
+    for prop, val in pairs(properties) do
+        local success, err = pcall(function()
+            local currentVal = newObj[prop]
+            newObj[prop] = convert(val, typeof(currentVal))
+        end)
+        if not success then
+            print("Warning: Failed to set " .. prop .. " on " .. name)
         end
     end
     
+    -- Auto-grounding logic (Only for root objects in Workspace)
+    if (p == workspace or p:IsDescendantOf(workspace)) and (newObj:IsA("BasePart") or newObj:IsA("Model")) then
+        -- Only check if Position/CFrame wasn't explicitly set high up
+        local currentPos = newObj:IsA("Model") and newObj:GetPivot().Position or newObj.Position
+        if currentPos.Y < 10 then -- If it's near 0,0,0 default
+             local groundedPos = getGround(currentPos)
+             if newObj:IsA("Model") then
+                 newObj:PivotTo(CFrame.new(groundedPos + Vector3.new(0, newObj:GetExtentsSize().Y/2, 0)))
+             else
+                 newObj.Position = groundedPos + Vector3.new(0, newObj.Size.Y/2, 0)
+             end
+        end
+    end
+    
+    newObj.Parent = p
+    
+    for _, childDef in ipairs(kids) do
+        createRecursive(childDef, newObj)
+    end
+    
     return newObj
+end
+
+local s, obj = pcall(function()
+    return createRecursive({{class_name="{class_name}", name="{name}", properties=props, children=children}}, parent)
 end)
 
 if s then
@@ -534,6 +614,7 @@ if not target then print("Error: Object not found.") return end
 local function convert(v, targetType)
     if targetType == "boolean" then return v == true or v == "true" or v == "1"
     elseif targetType == "number" then return tonumber(v)
+    elseif targetType == "string" then return tostring(v)
     elseif targetType == "Vector3" then
         if type(v) == "table" then return Vector3.new(v.x or v[1], v.y or v[2], v.z or v[3]) end
         local x,y,z = tostring(v):match("([^,]+),([^,]+),([^,]+)")
@@ -542,16 +623,30 @@ local function convert(v, targetType)
         if type(v) == "table" then 
             return Color3.fromRGB(v.r or v[1], v.g or v[2], v.b or v[3])
         end
-        local r,g,b = tostring(v):match("([^,]+),([^,]+),([^,]+)")
-        if r then 
-            return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
-        end
-        return Color3.fromHex(tostring(v))
+        local s = tostring(v)
+        local r,g,b = s:match("([^,]+),([^,]+),([^,]+)")
+        if r then return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b)) end
+        if s:sub(1,1) == "#" then return Color3.fromHex(s) end
+        
+        local names = {{Red=Color3.new(1,0,0), Green=Color3.new(0,1,0), Blue=Color3.new(0,0,1), White=Color3.new(1,1,1), Black=Color3.new(0,0,0), Yellow=Color3.new(1,1,0), Cyan=Color3.new(0,1,1), Magenta=Color3.new(1,0,1), Grey=Color3.new(0.5,0.5,0.5)}}
+        if names[s] then return names[s] end
+        
+        return Color3.fromHex(s)
     elseif targetType == "BrickColor" then
         if type(v) == "table" then return BrickColor.new(Color3.new(v.r or v[1], v.g or v[2], v.b or v[3])) end
-        local r,g,b = tostring(v):match("([^,]+),([^,]+),([^,]+)")
-        if r then return BrickColor.new(Color3.new(tonumber(r), tonumber(g), tonumber(b))) end
         return BrickColor.new(tostring(v))
+    elseif targetType == "UDim2" then
+        if type(v) == "table" then return UDim2.new(v[1], v[2], v[3], v[4]) end
+        local s = tostring(v):gsub("[{{}}]", "")
+        local parts = {{}}
+        for p in s:gmatch("([^,]+)") do table.insert(parts, tonumber(p)) end
+        if #parts == 4 then return UDim2.new(parts[1], parts[2], parts[3], parts[4]) end
+        return UDim2.new(0,0,0,0)
+    elseif typeof(targetType) == "EnumItem" then
+        local enumName = tostring(targetType.EnumType)
+        local success, val = pcall(function() return Enum[enumName][v] end)
+        if success then return val end
+        return v
     elseif targetType == "CFrame" then
         if type(v) == "table" then return CFrame.new(unpack(v)) end
         local parts = {{}}
@@ -660,6 +755,17 @@ local amp = {amplitude}
 local mat = Enum.Material.{material}
 local biome = "{biome}"
 
+local function getGround(pos)
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {{workspace:FindFirstChild("Baseplate")}}
+    params.FilterType = Enum.RaycastFilterType.Include
+    local ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), params)
+    if not ray then
+        ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0))
+    end
+    return ray and ray.Position or pos
+end
+
 print("--- Generating Procedural Terrain (" .. biome .. ") ---")
 
 for x = -size.X/2, size.X/2, 4 do
@@ -691,7 +797,7 @@ if spawn then
         spawn.Position = ray.Position + Vector3.new(0, spawn.Size.Y/2, 0)
     else
         -- Fallback to center ground if spawn is way off
-        spawn.Position = _G.Helper.getGround(Vector3.new(0,0,0)) + Vector3.new(0, spawn.Size.Y/2, 0)
+        spawn.Position = getGround(Vector3.new(0,0,0)) + Vector3.new(0, spawn.Size.Y/2, 0)
     end
 end
 
@@ -708,6 +814,17 @@ local function toVec3(s)
     local x,y,z = s:match("([^,]+),([^,]+),([^,]+)")
     if not x then return Vector3.new(0,5,0) end
     return Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+end
+
+local function getGround(pos)
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {{workspace:FindFirstChild("Baseplate")}}
+    params.FilterType = Enum.RaycastFilterType.Include
+    local ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), params)
+    if not ray then
+        ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0))
+    end
+    return ray and ray.Position or pos
 end
 
 print("--- Smart Asset Setup: " .. query .. " ---")
@@ -738,7 +855,7 @@ local success, result = pcall(function()
     
     local targetPos = toVec3(posStr)
     -- Auto-grounding: search for surface
-    local groundedPos = _G.Helper.getGround(targetPos)
+    local groundedPos = getGround(targetPos)
     model:MoveTo(groundedPos)
     model:MakeJoints()
     
@@ -879,54 +996,6 @@ else
 end
 """
 
-SEARCH_MARKETPLACE_LUA = """
-local query = "{query}"
-local assetType = "{asset_type}"
-
-print("--- Searching Marketplace for '" .. query .. "' (" .. assetType .. ") ---")
-
-local InsertService = game:GetService("InsertService")
-local success, result = pcall(function()
-    return InsertService:GetFreeModels(query, 0)
-end)
-
-if success and result then
-    local items = {{}}
-    
-    -- Robust multi-level unpacking
-    if type(result) == "table" then
-        if result.Results then items = result.Results
-        elseif result[1] and result[1].Results then items = result[1].Results
-        else items = result end
-    elseif type(result) == "userdata" and result.GetCurrentPage then
-        items = result:GetCurrentPage()
-    end
-
-    if type(items) ~= "table" or #items == 0 then
-        print("No results found.")
-    else
-        print("Top results:")
-        local count = 0
-        for _, item in pairs(items) do
-            if type(item) == "table" then
-                local id = item.AssetId or item.AssetID or item.Id or item.ID
-                if id then
-                    count = count + 1
-                    local name = item.Name or item.name or "Unknown"
-                    local creator = item.CreatorName or (item.Creator and item.Creator.Name) or "Unknown"
-                    print(string.format("- %s (ID: %s) - by %s", name, tostring(id), creator))
-                end
-            end
-            if count >= 10 then break end
-        end
-        if count == 0 then print("0 valid assets found in results.") end
-        print("TIP: Use 'insert_model' with the specific Asset ID from this list.")
-    end
-else
-    print("Error searching marketplace: " .. tostring(result))
-end
-"""
-
 REPARENT_INSTANCE_LUA = """
 local target = {path}
 local newParent = {new_parent}
@@ -942,46 +1011,6 @@ if success then
     print("Successfully moved " .. target.Name .. " to " .. newParent.Name)
 else
     print("Error moving object: " .. tostring(err))
-end
-"""
-
-MARKETPLACE_INFO_LUA = """
-local assetId = {asset_id}
-local MarketplaceService = game:GetService("MarketplaceService")
-local InsertService = game:GetService("InsertService")
-
-local success, result = pcall(function()
-    local info = MarketplaceService:GetProductInfo(assetId)
-    
-    -- Content Scan: Insert to nil, count classes, then destroy
-    local classCounts = {{}}
-    local totalParts = 0
-    local model = InsertService:LoadAsset(assetId)
-    
-    for _, item in ipairs(model:GetDescendants()) do
-        local cls = item.ClassName
-        classCounts[cls] = (classCounts[cls] or 0) + 1
-        if item:IsA("BasePart") then totalParts = totalParts + 1 end
-    end
-    model:Destroy()
-    
-    return {{info = info, counts = classCounts, parts = totalParts}}
-end)
-
-if success then
-    local data = result
-    print("--- Marketplace Info for " .. assetId .. " ---")
-    print("Name: " .. data.info.Name)
-    print("Creator: " .. data.info.Creator.Name)
-    print("Description: " .. data.info.Description)
-    
-    local countStr = ""
-    for cls, count in pairs(data.counts) do
-        countStr = countStr .. cls .. ": " .. count .. ", "
-    end
-    print("Contents: " .. (countStr ~= "" and countStr:sub(1, -3) or "None"))
-else
-    print("Error fetching info: " .. tostring(result))
 end
 """
 
@@ -1068,7 +1097,7 @@ local function getDirection(refPart, targetPos)
     if math.abs(x) > 3 then horizontal = (x > 0 and "to the right" or "to the left") end
     if math.abs(y) > 5 then vertical = (y > 0 and "above" or "below") end
 
-    local result = {}
+    local result = {{}}
     if depth ~= "" then table.insert(result, depth) end
     if horizontal ~= "" then table.insert(result, horizontal) end
     if vertical ~= "" then table.insert(result, vertical) end
