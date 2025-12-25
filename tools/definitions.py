@@ -403,7 +403,7 @@ def get_virtual_tool_definitions():
         ),
         types.FunctionDeclaration(
             name="scatter_objects",
-            description="Scatters multiple clones of an object across an area with ground detection.",
+            description="Scatters multiple clones of an object across an area with advanced ground alignment and random rotation.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -421,8 +421,62 @@ def get_virtual_tool_definitions():
                         "description": "The radius of the scattering area.",
                         "default": 100,
                     },
+                    "align_to_surface": {
+                        "type": "boolean",
+                        "description": "If true, raycasts down to find the ground and aligns the object.",
+                        "default": True,
+                    },
+                    "random_rotation": {
+                        "type": "boolean",
+                        "description": "If true, rotates the object randomly on the Y-axis.",
+                        "default": True,
+                    },
                 },
                 "required": ["path"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="search_marketplace",
+            description="Searches the Roblox Marketplace for assets and returns a list of names and IDs. Use this BEFORE inserting to find the best asset.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query (e.g., 'Modern House', 'AK47').",
+                    },
+                    "asset_type": {
+                        "type": "string",
+                        "enum": [
+                            "Model",
+                            "Audio",
+                            "Decal",
+                            "MeshPart",
+                            "Plugin",
+                        ],
+                        "description": "The type of asset to search for.",
+                        "default": "Model",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="reparent_instance",
+            description="Moves an instance to a new parent (e.g., move a Tool to StarterPack).",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The full path to the instance to move.",
+                    },
+                    "new_parent": {
+                        "type": "string",
+                        "description": "The full path to the new parent (e.g., 'game.StarterPack').",
+                    },
+                },
+                "required": ["path", "new_parent"],
             },
         ),
         types.FunctionDeclaration(
@@ -476,6 +530,48 @@ def get_virtual_tool_definitions():
                     },
                 },
                 "required": ["template_path"],
+            },
+        ),
+        types.FunctionDeclaration(
+            name="get_spatial_summary",
+            description="Returns a high-level summary of the surroundings (relative to the player/spawn). Use this to 'see' where objects are located relative to you (in front of, behind, left, right).",
+            parameters={"type": "object", "properties": {}},
+        ),
+        types.FunctionDeclaration(
+            name="manage_plan",
+            description="Manages the persistent plan. Use this to create, update, or clear the current task list. ALWAYS use this when starting a new complex task.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "update_todo", "add_note", "clear"],
+                        "description": "The action to perform.",
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "The main goal (required for 'create').",
+                    },
+                    "todos": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of steps (required for 'create').",
+                    },
+                    "todo_index": {
+                        "type": "integer",
+                        "description": "The 1-based index of the todo item to update (required for 'update_todo').",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "active", "completed"],
+                        "description": "The new status (required for 'update_todo').",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "The note content (required for 'add_note').",
+                    },
+                },
+                "required": ["action"],
             },
         ),
     ]

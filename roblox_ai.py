@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 # Import tools from the new tools directory
 from tools.definitions import get_virtual_tool_definitions
+from tools.planner import PlanManager
 from tools.lua_scripts import (
     INSPECT_SERVICE_LUA,
     READ_SCRIPT_LUA,
@@ -46,6 +47,9 @@ from tools.lua_scripts import (
     SCATTER_LUA,
     MARKETPLACE_INFO_LUA,
     CREATE_SPAWNER_LUA,
+    GET_SPATIAL_SUMMARY_LUA,
+    SEARCH_MARKETPLACE_LUA,
+    REPARENT_INSTANCE_LUA,
 )
 
 # Load environment variables from .env
@@ -71,24 +75,6 @@ _G.Helper = {
             ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0))
         end
         return ray and ray.Position or pos
-    end,
-    getSpatialSummary = function()
-        local summary = "--- Spatial Summary ---\\n"
-        local spawn = workspace:FindFirstChildWhichIsA("SpawnLocation", true)
-        if spawn then
-            summary = summary .. string.format("Spawn: Pos=%s, Look=%s\\n", tostring(spawn.Position), tostring(spawn.CFrame.LookVector))
-        end
-        local baseplate = workspace:FindFirstChild("Baseplate")
-        if baseplate then
-            summary = summary .. string.format("Baseplate: Size=%s, Pos=%s\\n", tostring(baseplate.Size), tostring(baseplate.Position))
-        end
-        -- Find major model centers
-        for _, child in pairs(workspace:GetChildren()) do
-            if child:IsA("Model") and child.PrimaryPart then
-                summary = summary .. string.format("Model '%s': Pos=%s\\n", child.Name, tostring(child.PrimaryPart.Position))
-            end
-        end
-        return summary
     end,
     scatter = function(template, count, range, parent)
         if not template then return end
@@ -212,11 +198,27 @@ class RobloxAIWrapper:
             )
             sys.exit(1)
 
-        self.client = genai.Client(api_key=self.api_key)
+        # Gemini Client Configuration with retry logic
+        retry_options = types.HttpRetryOptions(
+            attempts=3,
+            initial_delay=1.0,
+            max_delay=30.0,
+            exp_base=2.0,
+            jitter=0.1,
+            http_status_codes=[429, 503, 404],
+        )
+        http_options = types.HttpOptions(
+            api_version="v1beta", retry_options=retry_options
+        )
+
+        self.client = genai.Client(
+            api_key=self.api_key, http_options=http_options
+        )
         self.model_id = model_id
         self.mcp_path = (
             "/Applications/RobloxStudioMCP.app/Contents/MacOS/rbx-studio-mcp"
         )
+        self.plan_manager = PlanManager()
 
     async def _handle_tool_call(self, session, tc):
         """Executes a single tool call and returns the result text."""
@@ -243,7 +245,29 @@ class RobloxAIWrapper:
         mcp_res = None
         res_text = None
 
-        if tc.name == "inspect_service":
+        if tc.name == "manage_plan":
+            action = tc.args.get("action")
+            if action == "create":
+                goal = tc.args.get("task")
+                todos = tc.args.get("todos", [])
+                res_text = self.plan_manager.create_plan(goal, todos)
+            elif action == "update_todo":
+                idx = tc.args.get("todo_index")
+                status = tc.args.get("status")
+                # Convert 1-based index to 0-based
+                res_text = self.plan_manager.update_todo(idx - 1, status)
+            elif action == "add_note":
+                note = tc.args.get("note")
+                res_text = self.plan_manager.add_note(note)
+            elif action == "clear":
+                res_text = self.plan_manager.clear_plan()
+            print(f"[*] Plan Manager: {res_text}")
+
+            # Print the full updated plan for the user to see immediately
+            if action != "clear":
+                print(self.plan_manager.get_context_string())
+
+        elif tc.name == "inspect_service":
             service = tc.args.get("service_name", "Workspace")
             depth = tc.args.get("depth", 4)
             print(f"[*] Inspecting {service} hierarchy (depth {depth})...")
@@ -276,7 +300,14 @@ class RobloxAIWrapper:
         elif tc.name == "patch_script_source":
             script_path = tc.args["script_path"]
             search_string = tc.args["search_string"]
-            replace_string = tc.args["replace_string"]
+            # Handle potential AI hallucination of parameter name
+            replace_string = tc.args.get("replace_string") or tc.args.get(
+                "patch_string"
+            )
+
+            if not replace_string:
+                return "Error: Missing 'replace_string' parameter."
+
             print(f"[*] Patching script: {script_path}...")
             lua_command = PATCH_SCRIPT_LUA.format(
                 script_path=script_path,
@@ -492,13 +523,42 @@ class RobloxAIWrapper:
                 "run_code", {"command": lua_command}
             )
 
+        elif tc.name == "search_marketplace":
+            query = tc.args["query"]
+            asset_type = tc.args.get("asset_type", "Model")
+            print(f"[*] Searching marketplace for: {query} ({asset_type})...")
+            lua_command = SEARCH_MARKETPLACE_LUA.format(
+                query=query, asset_type=asset_type
+            )
+            mcp_res = await session.call_tool(
+                "run_code", {"command": lua_command}
+            )
+
+        elif tc.name == "reparent_instance":
+            path = tc.args["path"]
+            new_parent = tc.args["new_parent"]
+            print(f"[*] Reparenting {path} to {new_parent}...")
+            lua_command = REPARENT_INSTANCE_LUA.format(
+                path=path, new_parent=new_parent
+            )
+            mcp_res = await session.call_tool(
+                "run_code", {"command": lua_command}
+            )
+
         elif tc.name == "scatter_objects":
             path = tc.args["path"]
             count = tc.args.get("count", 10)
             radius = tc.args.get("radius", 100)
-            print(f"[*] Scattering {count} instances of {path}...")
+            align = str(tc.args.get("align_to_surface", True)).lower()
+            rot = str(tc.args.get("random_rotation", True)).lower()
+
+            print(f"[*] Scattering {count} of {path} (Align: {align})...")
             lua_command = SCATTER_LUA.format(
-                path=path, count=count, radius=radius
+                path=path,
+                count=count,
+                radius=radius,
+                align_to_surface=align,
+                random_rotation=rot,
             )
             mcp_res = await session.call_tool(
                 "run_code", {"command": lua_command}
@@ -531,6 +591,12 @@ class RobloxAIWrapper:
             )
             mcp_res = await session.call_tool(
                 "run_code", {"command": lua_command}
+            )
+
+        elif tc.name == "get_spatial_summary":
+            print(f"[*] Fetching relative spatial summary...")
+            mcp_res = await session.call_tool(
+                "run_code", {"command": GET_SPATIAL_SUMMARY_LUA}
             )
 
         else:
@@ -661,14 +727,15 @@ class RobloxAIWrapper:
                 "YOUR CORE PRINCIPLES:\n"
                 "1. TRUST YOUR TOOLS: Your building tools (`smart_setup_asset`, `generate_procedural_terrain`, `create_instance`) now have built-in Ground-Awareness. They automatically snap objects to the terrain surface. You no longer need to calculate complex Y-coordinates. Focus on X and Z; the system handles the floor.\n"
                 "2. EFFICIENCY: Use 'modify_instance' to style objects in a single turn. Use 'smart_setup_asset' to search and setup weapons/NPCs in ONE turn. Use 'create_timed_spawner' to automate object spawning instead of writing manual scripts.\n"
-                "3. CONTEXT AWARENESS: Use 'get_studio_state' to see if you are in Edit Mode or Play Mode. Remember: objects spawned by scripts only exist in Play Mode.\n"
+                "3. CONTEXT AWARENESS: Use 'get_studio_state' to see if you are in Edit Mode or Play Mode. Use 'get_spatial_summary' frequently to get a human-like description of your surroundings. Remember: objects spawned by scripts only exist in Play Mode.\n"
                 "4. MARKETPLACE STRATEGY: Use 'smart_setup_asset' for complex items. If unsure about an asset, use 'inspect_marketplace_item' first to see its description and class contents.\n"
                 "5. TERRAIN & ENVIRONMENT: Use 'generate_procedural_terrain' for large landscapes. The system will automatically move the player's spawn to the new surface. Use 'scatter_objects' to distribute environmental props automatically.\n"
                 "6. GENERALIZATION: Build systems that work for any game type. Favor atomic tools over monolithic Lua scripts. Use generic containers and naming conventions.\n"
                 "7. DEBUGGING: Be proactive. After editing any script, you MUST verify the logs using 'get_studio_logs'. Do not wait for the user. If an asset fails to load (check logs!) or a property seems wrong, use 'get_studio_state' or 'get_studio_logs' to see the exact error.\n"
                 "8. LIMITATIONS: Note that 'Technology' (ShadowMap/Future) cannot be set via script due to engine security. Don't try to change it; just work with what's there.\n"
-                "9. SPATIAL LOGIC: Floor bounds are half-size. A 50-stud floor at (0,0,0) ends at +/- 25 on X and Z. Spawning NPCs at Z=30 will cause them to fall into the void. Default LookVector is (0,0,-1); to face a counter at +Z, rotate the SpawnLocation 180 degrees.\n"
-                "10. DATA TYPES: Properties like TorsoColor require 'BrickColor'. Use 'BrickColor.new(color3_value)' if you only have RGB. Your Lua tools will try to auto-convert, but be explicit when possible.\n\n"
+                "9. SPATIAL LOGIC: Use `get_spatial_summary` to understand surroundings. It provides human labels (e.g. 'front'), raw 'Offset' [X, Y, Z] in your Object-Space, and 'Rot' (Orientation in degrees). +X is Right, -X is Left, +Y is Up, -Y is Down, -Z is Front, +Z is Back. Orientation [0,0,0] means facing forward (-Z).\n"
+                "10. VISUAL AWARENESS: Before moving or placing objects, use `get_spatial_summary`. Use 'Rot' to understand which way an object is facing (e.g., to align a door with a wall).\n"
+                "11. DATA TYPES: Properties like TorsoColor require 'BrickColor'. Use 'BrickColor.new(color3_value)' if you only have RGB. Your Lua tools will try to auto-convert, but be explicit when possible.\n\n"
                 "WORKFLOW:\n"
                 "- If a unit isn't moving: Check 'Anchored' and 'HipHeight' using 'get_properties'. Verify if simulation is running with 'get_studio_state'.\n"
                 "- If building: Run 'generate_procedural_terrain' first. The system will automatically move the player's spawn to the new surface. Use 'smart_setup_asset' for characters and weapons; they will land on the ground automatically.\n"
@@ -681,6 +748,23 @@ class RobloxAIWrapper:
     async def _process_request(self, session, config, history, content_parts):
         """Internal method to run a Gemini generation cycle, can be cancelled."""
         try:
+            # Inject Plan Context
+            plan_context = self.plan_manager.get_context_string()
+            if plan_context:
+                # Prepend to the first text part, or add a new text part
+                print(f"\n[!] Injecting Plan Context:\n{plan_context}")
+                if content_parts and hasattr(content_parts[0], "text"):
+                    # We create a new list to avoid modifying the passed reference unexpectedly
+                    # though here we are constructing the list in the caller usually.
+                    # Let's just prepend a text part.
+                    content_parts.insert(
+                        0, types.Part.from_text(text=plan_context)
+                    )
+                else:
+                    content_parts.insert(
+                        0, types.Part.from_text(text=plan_context)
+                    )
+
             history.append(types.Content(role="user", parts=content_parts))
 
             while True:
@@ -779,6 +863,10 @@ class RobloxAIWrapper:
                         "Usage: Type commands or HOLD [Right Command] to speak."
                     )
                     print("Type 'exit' to quit.")
+                    print("Type '/plan' to see the current plan.")
+
+                    if self.plan_manager.state:
+                        print(self.plan_manager.get_context_string())
 
                     loop = asyncio.get_running_loop()
 
@@ -786,16 +874,29 @@ class RobloxAIWrapper:
                         while True:
                             try:
                                 text = input("\n> ")
+                                if not text:
+                                    continue
                                 if text.lower() in ["exit", "quit", "q"]:
                                     loop.call_soon_threadsafe(
                                         event_queue.put_nowait,
                                         TextInputEvent("exit"),
                                     )
                                     break
+                                elif text.lower() == "/plan":
+                                    print(
+                                        self.plan_manager.get_context_string()
+                                        or "No active plan."
+                                    )
+                                    continue
+
                                 loop.call_soon_threadsafe(
                                     event_queue.put_nowait, TextInputEvent(text)
                                 )
-                            except EOFError:
+                            except (EOFError, KeyboardInterrupt):
+                                loop.call_soon_threadsafe(
+                                    event_queue.put_nowait,
+                                    TextInputEvent("exit"),
+                                )
                                 break
 
                     threading.Thread(target=input_thread, daemon=True).start()
@@ -859,6 +960,8 @@ class RobloxAIWrapper:
                                         )
                                     )
 
+        except KeyboardInterrupt:
+            print("\n[!] Exiting...")
         except Exception as e:
             if not isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
                 print(f"\n[!] Fatal Error: {e}")
@@ -871,6 +974,8 @@ class RobloxAIWrapper:
                     await process.wait()
                 except:
                     pass
+            # Force exit to kill daemon input thread blocking on input()
+            os._exit(0)
 
 
 if __name__ == "__main__":

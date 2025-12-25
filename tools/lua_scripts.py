@@ -699,10 +699,35 @@ local success, result = pcall(function()
     local search = InsertService:GetFreeModels(query, 0)
     if not search then error("Marketplace search returned nil for query: " .. query) end
     
-    local pages = search:GetCurrentPage()
-    if #pages == 0 then error("No results found for query: " .. query) end
+    local items = {{}}
+    if type(search) == "userdata" and search.GetCurrentPage then
+        items = search:GetCurrentPage()
+    elseif type(search) == "table" then
+        if search.Results then
+            items = search.Results
+        else
+            items = search
+        end
+    end
     
-    local assetId = pages[1].AssetId
+    if #items == 0 then error("No results found for query: " .. query) end
+    
+    -- Robust key detection
+    local firstItem = items[1]
+    local assetId = firstItem.AssetId or firstItem.AssetID or firstItem.Id or firstItem.ID
+    
+    if not assetId then
+        local keys = ""
+        local info = "Type: " .. type(firstItem)
+        for k,v in pairs(firstItem) do 
+            keys = keys .. k .. "," 
+            if type(v) ~= "table" and type(v) ~= "userdata" then
+                info = info .. " [" .. k .. "=" .. tostring(v) .. "]"
+            end
+        end
+        error("Smart Setup: No ID found. Keys: " .. keys .. ". Info: " .. info)
+    end
+    
     local model = InsertService:LoadAsset(assetId)
     model.Parent = workspace
     
@@ -714,6 +739,26 @@ local success, result = pcall(function()
     
     local payload = nil
     local category = "Unknown"
+    
+    -- Handle Kit Installers (Ungroup in X)
+    for _, item in ipairs(model:GetDescendants()) do
+        if item.Name == "Ungroup in Workspace" then
+            for _, child in ipairs(item:GetChildren()) do child.Parent = workspace end
+            item:Destroy()
+        elseif item.Name == "Ungroup in ReplicatedStorage" then
+            for _, child in ipairs(item:GetChildren()) do child.Parent = game:GetService("ReplicatedStorage") end
+            item:Destroy()
+        elseif item.Name == "Ungroup in ServerStorage" then
+            for _, child in ipairs(item:GetChildren()) do child.Parent = game:GetService("ServerStorage") end
+            item:Destroy()
+        elseif item.Name == "Ungroup in ServerScriptService" then
+            for _, child in ipairs(item:GetChildren()) do child.Parent = game:GetService("ServerScriptService") end
+            item:Destroy()
+        elseif item.Name == "Ungroup in StarterPack" then
+            for _, child in ipairs(item:GetChildren()) do child.Parent = game:GetService("StarterPack") end
+            item:Destroy()
+        end
+    end
     
     -- Scan for Tools
     for _, item in ipairs(model:GetDescendants()) do
@@ -758,6 +803,8 @@ SCATTER_LUA = """
 local path = {path}
 local count = {count}
 local radius = {radius}
+local alignToSurface = {align_to_surface}
+local randomRot = {random_rotation}
 
 if not path then 
     print("Error: Source object for scattering not found. Please verify the path.") 
@@ -765,16 +812,137 @@ if not path then
 end
 
 print("--- Scattering " .. count .. " instances of " .. path.Name .. " ---")
+
+local function getGround(pos)
+    local params = RaycastParams.new()
+    -- Safety check for filter
+    if typeof(path) == "Instance" then
+        params.FilterDescendantsInstances = {{path}} -- Don't hit self
+    else
+        print("Warning: Scatter source is not an Instance ("..typeof(path).."). Raycast filtering disabled for source.")
+    end
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    
+    local ray = workspace:Raycast(pos + Vector3.new(0, 500, 0), Vector3.new(0, -1000, 0), params)
+    return ray and ray.Position or (pos + Vector3.new(0, 500, 0)) -- Fallback if missed
+end
+
 local success, err = pcall(function()
-    -- Ensure Helper exists
-    if not _G.Helper then error("LUA_UTILS / _G.Helper not initialized correctly.") end
-    _G.Helper.scatter(path, count, radius, workspace)
+    if typeof(path) ~= "Instance" then
+        print("Warning: Path argument is not an Instance (" .. typeof(path) .. "). Attempting to proceed, but Raycast filter may be unsafe.")
+    end
+
+    for i = 1, count do
+        local clone = path:Clone()
+        local x = (math.random() - 0.5) * radius * 2
+        local z = (math.random() - 0.5) * radius * 2
+        
+        clone.Parent = workspace
+        
+        local targetPos = Vector3.new(x, 0, z)
+        
+        if alignToSurface then
+            targetPos = getGround(targetPos)
+        end
+        
+        local targetCF = CFrame.new(targetPos)
+        
+        -- Adjust for model size to prevent sinking
+        if clone:IsA("Model") then
+            local _, size = clone:GetBoundingBox()
+            targetCF = targetCF * CFrame.new(0, size.Y/2, 0)
+        elseif clone:IsA("BasePart") then
+            targetCF = targetCF * CFrame.new(0, clone.Size.Y/2, 0)
+        end
+        
+        if randomRot then
+            targetCF = targetCF * CFrame.Angles(0, math.rad(math.random(0, 360)), 0)
+        end
+        
+        if clone:IsA("Model") then
+            clone:PivotTo(targetCF)
+        else
+            clone.CFrame = targetCF
+        end
+    end
 end)
 
 if success then
     print("Scattering complete.")
 else
     print("Error during scattering: " .. tostring(err))
+end
+"""
+
+SEARCH_MARKETPLACE_LUA = """
+local query = "{query}"
+local assetType = "{asset_type}"
+
+print("--- Searching Marketplace for '" .. query .. "' (" .. assetType .. ") ---")
+
+local InsertService = game:GetService("InsertService")
+local success, result = pcall(function()
+    return InsertService:GetFreeModels(query, 0)
+end)
+
+if success and result then
+    local items = {{}}
+    
+    -- Handle both CatalogPages (Userdata) and direct Table returns
+    if type(result) == "userdata" and result.GetCurrentPage then
+        items = result:GetCurrentPage()
+    elseif type(result) == "table" then
+        if result.Results then
+            items = result.Results
+        else
+            items = result
+        end
+    end
+
+    if #items == 0 then
+        print("No results found.")
+    else
+        print("Top results:")
+        -- Use pairs to handle sparse tables or non-numeric keys safely
+        local count = 0
+        for i, item in pairs(items) do
+            if count >= 10 then break end
+            count = count + 1
+            
+            -- Robust key detection (AssetId vs AssetID vs Id)
+            local id = item.AssetId or item.AssetID or item.Id or item.ID
+            local name = item.Name or item.name or "Unknown"
+            local creator = item.CreatorName or (item.Creator and item.Creator.Name) or "Unknown"
+            
+            if id then
+                print(string.format("- %s (ID: %d) - by %s", name, id, creator))
+            else
+                print("Found item with missing ID keys. Dumping keys:")
+                for k,v in pairs(item) do print("  Key:", k, "Val:", tostring(v)) end
+            end
+        end
+        print("TIP: Use 'insert_model' with the specific Name or Asset ID from this list.")
+    end
+else
+    print("Error searching marketplace: " .. tostring(result))
+end
+"""
+
+REPARENT_INSTANCE_LUA = """
+local target = {path}
+local newParent = {new_parent}
+
+if not target then print("Error: Target object not found at path.") return end
+if not newParent then print("Error: New parent not found at path.") return end
+
+local success, err = pcall(function()
+    target.Parent = newParent
+end)
+
+if success then
+    print("Successfully moved " .. target.Name .. " to " .. newParent.Name)
+else
+    print("Error moving object: " .. tostring(err))
 end
 """
 
@@ -886,4 +1054,64 @@ if success then
 else
     print("Error creating spawner: " .. tostring(err))
 end
+"""
+
+GET_SPATIAL_SUMMARY_LUA = """
+local function getDirection(refPart, targetPos)
+    local localPos = refPart.CFrame:PointToObjectSpace(targetPos)
+    local x, y, z = localPos.X, localPos.Y, localPos.Z
+    
+    local horizontal = ""
+    local vertical = ""
+    local depth = ""
+
+    if math.abs(z) > 3 then depth = (z > 0 and "behind" or "in front of") end
+    if math.abs(x) > 3 then horizontal = (x > 0 and "to the right" or "to the left") end
+    if math.abs(y) > 5 then vertical = (y > 0 and "above" or "below") end
+
+    local result = {}
+    if depth ~= "" then table.insert(result, depth) end
+    if horizontal ~= "" then table.insert(result, horizontal) end
+    if vertical ~= "" then table.insert(result, vertical) end
+    
+    if #result == 0 then return "right at" end
+    return table.concat(result, " and ")
+end
+
+-- Use Player's character or SpawnLocation as reference
+local ref = workspace:FindFirstChildWhichIsA("SpawnLocation", true)
+for _, p in pairs(game.Players:GetPlayers()) do
+    if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+        ref = p.Character.HumanoidRootPart
+        break
+    end
+end
+
+if not ref then 
+    print("--- Spatial Summary ---\\nNo reference point (Player/Spawn) found.")
+    return
+end
+
+local summary = string.format("--- Spatial Summary (Relative to %s) ---\\n", ref.Name)
+local baseplate = workspace:FindFirstChild("Baseplate")
+if baseplate then
+    summary = summary .. string.format("Baseplate: Size=%s, Pos=%s\\n", tostring(baseplate.Size), tostring(baseplate.Position))
+end
+
+-- Find major objects and describe them relatively
+for _, child in pairs(workspace:GetChildren()) do
+    if (child:IsA("Model") and child.PrimaryPart) or (child:IsA("BasePart") and child.Name ~= "Baseplate" and child ~= ref) then
+        local pos = child:IsA("Model") and child.PrimaryPart.Position or child.Position
+        local dist = (pos - ref.Position).Magnitude
+        
+        if dist < 200 then -- Focus on things within 200 studs
+            local localPos = ref.CFrame:PointToObjectSpace(pos)
+            local orientation = child:IsA("Model") and (child.PrimaryPart and child.PrimaryPart.Orientation or Vector3.new(0,0,0)) or child.Orientation
+            local dir = getDirection(ref, pos)
+            summary = summary .. string.format("- %s: %s (Dist: %.1f, Offset: [%.1f, %.1f, %.1f], Rot: [%.0f, %.1f, %.0f])\\n", 
+                child.Name, dir, dist, localPos.X, localPos.Y, localPos.Z, orientation.X, orientation.Y, orientation.Z)
+        end
+    end
+end
+print(summary)
 """
