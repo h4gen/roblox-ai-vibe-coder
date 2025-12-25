@@ -8,6 +8,7 @@ import wave
 import threading
 from dataclasses import dataclass
 from typing import Optional, List, Any
+import httpx  # For talking to the local server
 
 import numpy as np
 import sounddevice as sd  #
@@ -162,14 +163,16 @@ class RobloxAIWrapper:
             api_key=self.api_key, http_options=http_options
         )
         self.model_id = model_id
-        self.mcp_path = (
-            "/Applications/RobloxStudioMCP.app/Contents/MacOS/rbx-studio-mcp"
-        )
+
+        # New API Connection
+        self.api_url = "http://127.0.0.1:8000"
+        self.http_client = httpx.AsyncClient(timeout=30.0)
+
         self.plan_manager = PlanManager()
         self.n_last_thoughts = int(os.environ.get("N_LAST_THOUGHTS", 3))
 
-    async def _handle_tool_call(self, session, tc):
-        """Executes a single tool call and returns the result text."""
+    async def _handle_tool_call(self, tc):
+        """Executes a single tool call by sending it to the local API server."""
 
         def dict_to_lua_table(d):
             if not d:
@@ -185,8 +188,7 @@ class RobloxAIWrapper:
                     val_str = f"[===[{v}]===]"
                 elif isinstance(v, dict):
                     val_str = dict_to_lua_table(v)
-                elif isinstance(v, list):  # Handle children lists
-                    # For list of objects, we need array-like table { [1]=... }
+                elif isinstance(v, list):
                     val_str = (
                         "{"
                         + ", ".join([dict_to_lua_table(item) for item in v])
@@ -200,8 +202,6 @@ class RobloxAIWrapper:
         def fix_path(path):
             if not path or not isinstance(path, str):
                 return path
-
-            # List of common services that the AI might use without 'game.'
             services = [
                 "Workspace",
                 "Lighting",
@@ -218,7 +218,6 @@ class RobloxAIWrapper:
                 "TweenService",
                 "Debris",
             ]
-
             path_lower = path.lower()
             for s in services:
                 s_lower = s.lower()
@@ -227,7 +226,6 @@ class RobloxAIWrapper:
                 ):
                     suffix = path[len(s) :] if len(path) > len(s) else ""
                     return f"game.{s}{suffix}"
-
             if (
                 path == "game"
                 or path.startswith("game.")
@@ -237,10 +235,54 @@ class RobloxAIWrapper:
             return path
 
         async def run_studio_code(lua_command):
-            return await session.call_tool("run_code", {"command": lua_command})
+            # Send code to the server's queue
+            try:
+                resp = await self.http_client.post(
+                    f"{self.api_url}/queue",
+                    json={"user_id": "default_user", "code": lua_command},
+                )
+                if resp.status_code != 200:
+                    return f"Error queuing code: {resp.text}"
+
+                cmd_data = resp.json()
+                cmd_id = cmd_data.get("id")
+
+                print(
+                    f" [Queued: {cmd_id}] Waiting for Studio execution...",
+                    end="",
+                    flush=True,
+                )
+
+                # Poll for result (timeout after 30s)
+                for _ in range(60):
+                    await asyncio.sleep(0.5)
+                    res_resp = await self.http_client.get(
+                        f"{self.api_url}/result/{cmd_id}"
+                    )
+                    if res_resp.status_code == 200:
+                        data = res_resp.json()
+                        if data["status"] == "completed":
+                            print(" [Done]")
+                            result_data = data["result"]
+                            # The plugin returns { success: bool, output: str, error: str }
+                            # We want to return just the string text for the AI
+                            if isinstance(result_data, dict):
+                                if result_data.get("success"):
+                                    return result_data.get("output", "Success")
+                                else:
+                                    return f"Error: {result_data.get('error') or result_data.get('output')}"
+                            return str(result_data)
+
+                print(" [Timeout]")
+                return "Error: Timeout waiting for Roblox Studio to execute command. Is the plugin connected?"
+
+            except Exception as e:
+                return f"Failed to connect to Vibe Coder Server: {e}"
 
         mcp_res = None
-        res_text = None
+
+        # --- TOOL MAPPING ---
+        lua_command = None
 
         if tc.name == "inspect_service":
             service = tc.args.get("service_name", "Workspace")
@@ -249,13 +291,11 @@ class RobloxAIWrapper:
             lua_command = INSPECT_SERVICE_LUA.format(
                 service=service, depth=depth
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "read_script_source":
             script_path = fix_path(tc.args["script_path"])
             print(f"[*] Reading script source: {script_path}...")
             lua_command = READ_SCRIPT_LUA.format(script_path=script_path)
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "edit_script_source":
             script_path = fix_path(tc.args["script_path"])
@@ -264,49 +304,40 @@ class RobloxAIWrapper:
             lua_command = EDIT_SCRIPT_LUA.format(
                 script_path=script_path, new_source=new_source
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "patch_script_source":
             script_path = fix_path(tc.args["script_path"])
             search_string = tc.args["search_string"]
-            # Handle potential AI hallucination of parameter name
             replace_string = tc.args.get("replace_string") or tc.args.get(
                 "patch_string"
             )
-
             if not replace_string:
-                return "Error: Missing 'replace_string' parameter."
-
+                return "Error: Missing 'replace_string'."
             print(f"[*] Patching script: {script_path}...")
             lua_command = PATCH_SCRIPT_LUA.format(
                 script_path=script_path,
                 search_string=search_string,
                 replace_string=replace_string,
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "get_studio_logs":
             count = tc.args.get("line_count", 50)
             print(f"[*] Fetching last {count} lines of Studio logs...")
             lua_command = GET_LOGS_LUA.format(count=count)
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "clear_studio_logs":
             print(f"[*] Marking start of new debug session in logs...")
-            mcp_res = await run_studio_code(CLEAR_LOGS_LUA)
-            res_text = "Debug session separator printed in Studio Output."
+            lua_command = CLEAR_LOGS_LUA
 
         elif tc.name == "search_scripts":
             pattern = tc.args["pattern"]
             print(f"[*] Searching scripts for: '{pattern}'...")
             lua_command = SEARCH_SCRIPTS_LUA.format(pattern=pattern)
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "get_object_info":
             path = fix_path(tc.args["path"])
             print(f"[*] Fetching info for: {path}...")
             lua_command = GET_OBJECT_INFO_LUA.format(path=path)
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "manage_tags":
             action = tc.args["action"]
@@ -316,21 +347,19 @@ class RobloxAIWrapper:
             lua_command = MANAGE_TAGS_LUA.format(
                 path=path, action=action, tag=tag
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "run_unit_tests":
             print(f"[*] Running unit tests...")
-            mcp_res = await run_studio_code(RUN_TESTS_LUA)
+            lua_command = RUN_TESTS_LUA
 
         elif tc.name == "get_performance_stats":
             print(f"[*] Fetching performance stats...")
-            mcp_res = await run_studio_code(GET_STATS_LUA)
+            lua_command = GET_STATS_LUA
 
         elif tc.name == "get_properties":
             path = fix_path(tc.args["path"])
             print(f"[*] Fetching properties for: {path}...")
             lua_command = GET_PROPERTIES_LUA.format(path=path)
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "set_property":
             path = fix_path(tc.args["path"])
@@ -340,7 +369,6 @@ class RobloxAIWrapper:
             lua_command = SET_PROPERTY_LUA.format(
                 path=path, property=prop, value=val
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "find_instances":
             root = fix_path(tc.args.get("root_path", "game"))
@@ -352,7 +380,6 @@ class RobloxAIWrapper:
             lua_command = FIND_INSTANCES_LUA.format(
                 root_path=root, class_name=cls, name_pattern=pat
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "create_instance":
             cls = tc.args["class_name"]
@@ -361,13 +388,11 @@ class RobloxAIWrapper:
             props = tc.args.get("properties", {})
             children = tc.args.get("children", [])
 
-            # Helper to convert list of children to Lua table string
             def children_to_lua(kids):
                 if not kids:
                     return "{}"
                 items = []
                 for kid in kids:
-                    # Recursive conversion
                     k_cls = kid.get("class_name")
                     k_name = kid.get("name", k_cls)
                     k_props = dict_to_lua_table(kid.get("properties", {}))
@@ -377,9 +402,7 @@ class RobloxAIWrapper:
                     )
                 return "{" + ", ".join(items) + "}"
 
-            print(
-                f"[*] Creating {cls} '{name}' in {parent} (with {len(children)} children)..."
-            )
+            print(f"[*] Creating {cls} '{name}' in {parent}...")
             lua_command = CREATE_INSTANCE_LUA.format(
                 class_name=cls,
                 parent_path=parent,
@@ -387,24 +410,21 @@ class RobloxAIWrapper:
                 props_table=dict_to_lua_table(props),
                 children_table=children_to_lua(children),
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "delete_instance":
             path = fix_path(tc.args["path"])
             print(f"[*] Deleting instance: {path}...")
             lua_command = DELETE_INSTANCE_LUA.format(path=path)
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "raycast_check":
             origin = tc.args["origin"]
             direction = tc.args["direction"]
             print(f"[*] Casting ray from {origin}...")
             lua_command = RAYCAST_LUA.format(origin=origin, direction=direction)
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "publish_game":
             print(f"[*] Publishing game to Roblox Cloud...")
-            mcp_res = await run_studio_code(PUBLISH_GAME_LUA)
+            lua_command = PUBLISH_GAME_LUA
 
         elif tc.name == "modify_instance":
             path = fix_path(tc.args["path"])
@@ -413,11 +433,10 @@ class RobloxAIWrapper:
             lua_command = MODIFY_INSTANCE_LUA.format(
                 path=path, props_table=dict_to_lua_table(props)
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "get_studio_state":
             print(f"[*] Fetching Studio state...")
-            mcp_res = await run_studio_code(GET_STUDIO_STATE_LUA)
+            lua_command = GET_STUDIO_STATE_LUA
 
         elif tc.name == "manipulate_terrain":
             action = tc.args["action"]
@@ -428,236 +447,105 @@ class RobloxAIWrapper:
             lua_command = MANIPULATE_TERRAIN_LUA.format(
                 action=action, position=pos, size=size, material=mat
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "generate_procedural_terrain":
             pos_str = tc.args["position"]
             size_str = tc.args["size"]
-            scale = tc.args.get("scale", 100)
-            amp = tc.args.get("amplitude", 50)
-            mat = tc.args.get("material", "Grass")
-            biome = tc.args.get("biome", "hills")
-
-            # Parse position and size
+            # ... (parsing logic same as before)
             px, py, pz = pos_str.replace(" ", "").split(",")
             width, depth = size_str.replace(" ", "").split(",")
-
-            print(
-                f"[*] Generating {biome} terrain ({width}x{depth}) at {pos_str}..."
-            )
+            print(f"[*] Generating terrain...")
             lua_command = GENERATE_TERRAIN_LUA.format(
                 x=px,
                 y=py,
                 z=pz,
                 width=width,
                 depth=depth,
-                scale=scale,
-                amplitude=amp,
-                material=mat,
-                biome=biome,
+                scale=tc.args.get("scale", 100),
+                amplitude=tc.args.get("amplitude", 50),
+                material=tc.args.get("material", "Grass"),
+                biome=tc.args.get("biome", "hills"),
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "smart_setup_asset":
             query = tc.args["query"]
             pos = tc.args.get("position", "0,5,0")
-            print(f"[*] Smart-setting up asset: {query} at {pos}...")
+            print(f"[*] Smart-setting up asset: {query}...")
             lua_command = SMART_SETUP_LUA.format(query=query, position=pos)
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "search_marketplace":
             query = tc.args["query"]
             asset_type = tc.args.get("asset_type", "Model")
-            print(f"[*] Searching marketplace for: {query} ({asset_type})...")
+            print(f"[*] Searching marketplace: {query}...")
             lua_command = SEARCH_MARKETPLACE_LUA.format(
                 query=query, asset_type=asset_type
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "reparent_instance":
             path = fix_path(tc.args["path"])
             new_parent = fix_path(tc.args["new_parent"])
-            print(f"[*] Reparenting {path} to {new_parent}...")
+            print(f"[*] Reparenting {path}...")
             lua_command = REPARENT_INSTANCE_LUA.format(
                 path=path, new_parent=new_parent
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "scatter_objects":
             path = fix_path(tc.args["path"])
-            count = tc.args.get("count", 10)
-            radius = tc.args.get("radius", 100)
-            align = str(tc.args.get("align_to_surface", True)).lower()
-            rot = str(tc.args.get("random_rotation", True)).lower()
-
-            print(f"[*] Scattering {count} of {path} (Align: {align})...")
+            # ... (args same as before)
+            print(f"[*] Scattering objects...")
             lua_command = SCATTER_LUA.format(
                 path=path,
-                count=count,
-                radius=radius,
-                align_to_surface=align,
-                random_rotation=rot,
+                count=tc.args.get("count", 10),
+                radius=tc.args.get("radius", 100),
+                align_to_surface=str(
+                    tc.args.get("align_to_surface", True)
+                ).lower(),
+                random_rotation=str(
+                    tc.args.get("random_rotation", True)
+                ).lower(),
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "create_timed_spawner":
-            template_path = fix_path(tc.args["template_path"])
-            container_name = tc.args.get("container_name", "SpawnedObjects")
-            interval = tc.args.get("interval", 5)
-            max_count = tc.args.get("max_count", 10)
-            spawn_area_center = tc.args.get("spawn_area_center", "0,10,0")
-            spawn_radius = tc.args.get("spawn_radius", 100)
-
-            print(f"[*] Creating timed spawner for {template_path}...")
+            print(f"[*] Creating timed spawner...")
             lua_command = CREATE_SPAWNER_LUA.format(
-                template_path=template_path,
-                container_name=container_name,
-                interval=interval,
-                max_count=max_count,
-                spawn_area_center=spawn_area_center,
-                spawn_radius=spawn_radius,
+                template_path=fix_path(tc.args["template_path"]),
+                container_name=tc.args.get("container_name", "SpawnedObjects"),
+                interval=tc.args.get("interval", 5),
+                max_count=tc.args.get("max_count", 10),
+                spawn_area_center=tc.args.get("spawn_area_center", "0,10,0"),
+                spawn_radius=tc.args.get("spawn_radius", 100),
             )
-            mcp_res = await run_studio_code(lua_command)
 
         elif tc.name == "get_spatial_summary":
             print(f"[*] Fetching relative spatial summary...")
-            mcp_res = await run_studio_code(GET_SPATIAL_SUMMARY_LUA)
+            lua_command = GET_SPATIAL_SUMMARY_LUA
 
         elif tc.name == "connect_parts":
-            part_a = fix_path(tc.args["part_a"])
-            part_b = fix_path(tc.args["part_b"])
-            c_type = tc.args.get("constraint_type", "Weld")
-            axis = tc.args.get("axis", "Y")
-            mode = tc.args.get("anchor_mode", "Center")
-
-            print(f"[*] Connecting {part_a} to {part_b} via {c_type}...")
+            print(f"[*] Connecting parts...")
             lua_command = CONNECT_PARTS_LUA.format(
-                part_a=part_a,
-                part_b=part_b,
-                constraint_type=c_type,
-                axis=axis,
-                anchor_mode=mode,
+                part_a=fix_path(tc.args["part_a"]),
+                part_b=fix_path(tc.args["part_b"]),
+                constraint_type=tc.args.get("constraint_type", "Weld"),
+                axis=tc.args.get("axis", "Y"),
+                anchor_mode=tc.args.get("anchor_mode", "Center"),
             )
-            mcp_res = await run_studio_code(lua_command)
 
-        else:
-            print(f"[*] Executing {tc.name} in Roblox Studio...")
+        elif tc.name == "run_code":
             cmd = tc.args.get("command") or tc.args.get("code")
-            if tc.name == "run_code" and cmd:
-                mcp_res = await run_studio_code(cmd)
-            else:
-                # Ensure we use 'command' if it's an MCP tool that might expect it
-                args = tc.args.copy()
-                if "code" in args:
-                    args["command"] = args.pop("code")
-                mcp_res = await session.call_tool(tc.name, args)
+            if cmd:
+                lua_command = cmd
 
-        # Unified response processing and error detection
-        if mcp_res and res_text is None:
-            res_text = "\n".join(
-                [c.text for c in mcp_res.content if hasattr(c, "text")]
-            )
+        # Execute
+        if lua_command:
+            return await run_studio_code(lua_command)
 
-        if res_text is not None:
-            # Detect Studio/Lua errors in the response text
-            is_lua_error = (
-                "Error:" in res_text
-                or "Unable to assign" in res_text
-                or "failed" in res_text.lower()
-                or "not found" in res_text.lower()
-                or "attempt to index" in res_text.lower()
-                or "nil value" in res_text.lower()
-                or "unexpected" in res_text.lower()
-                or "traceback" in res_text.lower()
-            )
+        return "Tool not implemented or no Lua command generated."
 
-            if (mcp_res and getattr(mcp_res, "isError", False)) or is_lua_error:
-                print(f"[!] Tool execution failed. Fetching logs...")
-                if not res_text.startswith("Error:"):
-                    res_text = f"Error: {res_text}"
+    def _get_gemini_config(self, mcp_tools=None):
+        """Creates the Gemini model configuration with virtual tools."""
 
-                # Automatically append recent logs on error
-                try:
-                    lua_logs = GET_LOGS_LUA.format(count=10)
-                    log_res = await session.call_tool(
-                        "run_code", {"command": lua_logs}
-                    )
-                    if log_res and log_res.content:
-                        log_text = "\n".join(
-                            [
-                                c.text
-                                for c in log_res.content
-                                if hasattr(c, "text")
-                            ]
-                        )
-                        res_text += f"\n\n--- AUTO-FETCHED LOGS ---\n{log_text}"
-                except Exception as e:
-                    res_text += f"\n(Failed to auto-fetch logs: {e})"
-            else:
-                print(f"[√] Success.")
-
-        return res_text or "No response from Studio."
-
-    async def _setup_mcp_session(self):
-        """Starts the MCP process and returns the session protocol components."""
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-        from mcp import ClientSession
-        import mcp.types as mcp_types
-
-        process = await asyncio.create_subprocess_exec(
-            self.mcp_path,
-            "--stdio",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=os.environ.copy(),
-        )
-
-        async def log_stderr():
-            try:
-                while True:
-                    line = await process.stderr.readline()
-                    if not line:
-                        break
-                    print(
-                        f"[Roblox Server Log] {line.decode().strip()}",
-                        file=sys.stderr,
-                    )
-            except Exception:
-                pass
-
-        stderr_task = asyncio.create_task(log_stderr())
-
-        params = StdioServerParameters(
-            command=self.mcp_path, args=["--stdio"], env=os.environ.copy()
-        )
-
-        return process, stderr_task, stdio_client(params)
-
-    def _get_gemini_config(self, mcp_tools):
-        """Creates the Gemini model configuration with both MCP and virtual tools."""
-
-        def clean_schema(schema):
-            if isinstance(schema, dict):
-                return {
-                    k: clean_schema(v)
-                    for k, v in schema.items()
-                    if k != "$schema"
-                }
-            return schema
-
-        # Convert MCP tools to Gemini format
-        gemini_tools = [
-            types.FunctionDeclaration(
-                name=t.name,
-                description=t.description,
-                parameters=clean_schema(t.inputSchema),
-            )
-            for t in mcp_tools
-        ]
-
-        # Add virtual tools
-        gemini_tools.extend(get_virtual_tool_definitions())
+        # We only use virtual tools now, no MCP discovery needed
+        gemini_tools = get_virtual_tool_definitions()
 
         return types.GenerateContentConfig(
             tools=[types.Tool(function_declarations=gemini_tools)],
@@ -687,8 +575,8 @@ class RobloxAIWrapper:
             ),
         )
 
-    async def _process_request(self, session, config, history, content_parts):
-        """Internal method to run a Gemini generation cycle, can be cancelled."""
+    async def _process_request(self, config, history, content_parts):
+        """Internal method to run a Gemini generation cycle."""
         try:
             history.append(types.Content(role="user", parts=content_parts))
 
@@ -719,7 +607,6 @@ class RobloxAIWrapper:
                                 f"\n\n[*] AI Call: {part.function_call.name}({json.dumps(part.function_call.args)})"
                             )
 
-                # Append the full response to history (including thoughts)
                 history.append(
                     types.Content(
                         role="model",
@@ -727,7 +614,6 @@ class RobloxAIWrapper:
                     )
                 )
 
-                # Prune older thoughts based on N_LAST_THOUGHTS to prevent 429 RESOURCE_EXHAUSTED
                 if self.n_last_thoughts != -1:
                     model_turn_count = 0
                     for i in range(len(history) - 1, -1, -1):
@@ -735,7 +621,6 @@ class RobloxAIWrapper:
                         if msg.role == "model":
                             model_turn_count += 1
                             if model_turn_count > self.n_last_thoughts:
-                                # Strip thought parts from this older model message
                                 msg.parts = [
                                     p
                                     for p in msg.parts
@@ -745,7 +630,7 @@ class RobloxAIWrapper:
                 if tool_calls:
                     response_parts = []
                     for tc in tool_calls:
-                        res_text = await self._handle_tool_call(session, tc)
+                        res_text = await self._handle_tool_call(tc)
                         response_parts.append(
                             types.Part.from_function_response(
                                 name=tc.name,
@@ -764,159 +649,101 @@ class RobloxAIWrapper:
 
         except asyncio.CancelledError:
             print("\n[!] Task Interrupted.")
-            # We don't append to history on cancellation to keep it clean
             raise
         except Exception as e:
             print(f"\n[!] Error in process_request: {e}")
             traceback.print_exc()
 
     async def run_interactive(self):
-        print(f"[*] Starting Roblox MCP binary...")
-        process, stderr_task, stdio_mgr = await self._setup_mcp_session()
+        print(f"[*] Connecting to Plugin Server at {self.api_url}...")
 
-        try:
-            from mcp import ClientSession
-            import mcp.types as mcp_types
+        # We no longer need MCP connection logic
+        config = self._get_gemini_config()
 
-            print("[*] Connecting to MCP...")
-            async with stdio_mgr as (read, write):
-                async with ClientSession(read, write) as session:
-                    print("[*] Initializing Protocol...")
-                    await session.initialize()
-                    await session.send_notification(
-                        mcp_types.InitializedNotification()
-                    )
+        history = []
+        event_queue = asyncio.Queue()
+        voice_manager = VoiceManager(event_queue)
 
-                    print("[*] Fetching Tools...")
-                    tools_resp = await session.list_tools()
-                    config = self._get_gemini_config(tools_resp.tools)
+        print(f"\n=== Roblox AI Studio ({self.model_id}) ===")
+        print("Usage: Type commands or HOLD [Right Command] to speak.")
+        print("Type 'exit' to quit.")
 
-                    print(
-                        f"[*] Connected! Tools found: {', '.join(t.name for t in tools_resp.tools)}, and 13 virtual tools."
-                    )
+        loop = asyncio.get_running_loop()
 
-                    history = []
-                    event_queue = asyncio.Queue()
-                    voice_manager = VoiceManager(event_queue)
-
-                    print(f"\n=== Roblox AI Studio ({self.model_id}) ===")
-                    print(
-                        "Usage: Type commands or HOLD [Right Command] to speak."
-                    )
-                    print("Type 'exit' to quit.")
-                    print("Type '/plan' to see the current plan.")
-
-                    if self.plan_manager.state:
-                        print(self.plan_manager.get_context_string())
-
-                    loop = asyncio.get_running_loop()
-
-                    def input_thread():
-                        while True:
-                            try:
-                                text = input("\n> ")
-                                if not text:
-                                    continue
-                                if text.lower() in ["exit", "quit", "q"]:
-                                    loop.call_soon_threadsafe(
-                                        event_queue.put_nowait,
-                                        TextInputEvent("exit"),
-                                    )
-                                    break
-                                elif text.lower() == "/plan":
-                                    print(
-                                        self.plan_manager.get_context_string()
-                                        or "No active plan."
-                                    )
-                                    continue
-
-                                loop.call_soon_threadsafe(
-                                    event_queue.put_nowait, TextInputEvent(text)
-                                )
-                            except (EOFError, KeyboardInterrupt):
-                                loop.call_soon_threadsafe(
-                                    event_queue.put_nowait,
-                                    TextInputEvent("exit"),
-                                )
-                                break
-
-                    threading.Thread(target=input_thread, daemon=True).start()
-
-                    async with asyncio.TaskGroup() as tg:
-                        current_task = None
-
-                        # Start the microphone stream
-                        with voice_manager.start_mic_stream():
-                            while True:
-                                event = await event_queue.get()
-
-                                if isinstance(event, TextInputEvent):
-                                    if event.text == "exit":
-                                        if current_task:
-                                            current_task.cancel()
-                                        break
-
-                                    if current_task and not current_task.done():
-                                        current_task.cancel()
-
-                                    current_task = tg.create_task(
-                                        self._process_request(
-                                            session,
-                                            config,
-                                            history,
-                                            [
-                                                types.Part.from_text(
-                                                    text=event.text
-                                                )
-                                            ],
-                                        )
-                                    )
-
-                                elif isinstance(event, PTTStartEvent):
-                                    if current_task and not current_task.done():
-                                        print(
-                                            "\n[*] Interrupting for voice input..."
-                                        )
-                                        current_task.cancel()
-
-                                elif isinstance(event, PTTEndEvent):
-                                    if not event.audio_data:
-                                        print("[!] No audio captured.")
-                                        continue
-
-                                    current_task = tg.create_task(
-                                        self._process_request(
-                                            session,
-                                            config,
-                                            history,
-                                            [
-                                                types.Part.from_bytes(
-                                                    data=event.audio_data,
-                                                    mime_type="audio/wav",
-                                                ),
-                                                types.Part.from_text(
-                                                    text="Follow the instructions in this audio."
-                                                ),
-                                            ],
-                                        )
-                                    )
-
-        except KeyboardInterrupt:
-            print("\n[!] Exiting...")
-        except Exception as e:
-            if not isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
-                print(f"\n[!] Fatal Error: {e}")
-                traceback.print_exc()
-        finally:
-            stderr_task.cancel()
-            if "process" in locals() and process.returncode is None:
+        def input_thread():
+            while True:
                 try:
-                    process.terminate()
-                    await process.wait()
-                except:
-                    pass
-            # Force exit to kill daemon input thread blocking on input()
-            os._exit(0)
+                    text = input("\n> ")
+                    if not text:
+                        continue
+                    if text.lower() in ["exit", "quit", "q"]:
+                        loop.call_soon_threadsafe(
+                            event_queue.put_nowait,
+                            TextInputEvent("exit"),
+                        )
+                        break
+
+                    loop.call_soon_threadsafe(
+                        event_queue.put_nowait, TextInputEvent(text)
+                    )
+                except (EOFError, KeyboardInterrupt):
+                    loop.call_soon_threadsafe(
+                        event_queue.put_nowait,
+                        TextInputEvent("exit"),
+                    )
+                    break
+
+        threading.Thread(target=input_thread, daemon=True).start()
+
+        async with asyncio.TaskGroup() as tg:
+            current_task = None
+
+            with voice_manager.start_mic_stream():
+                while True:
+                    event = await event_queue.get()
+
+                    if isinstance(event, TextInputEvent):
+                        if event.text == "exit":
+                            if current_task:
+                                current_task.cancel()
+                            break
+
+                        if current_task and not current_task.done():
+                            current_task.cancel()
+
+                        current_task = tg.create_task(
+                            self._process_request(
+                                config,
+                                history,
+                                [types.Part.from_text(text=event.text)],
+                            )
+                        )
+
+                    elif isinstance(event, PTTStartEvent):
+                        if current_task and not current_task.done():
+                            print("\n[*] Interrupting for voice input...")
+                            current_task.cancel()
+
+                    elif isinstance(event, PTTEndEvent):
+                        if not event.audio_data:
+                            print("[!] No audio captured.")
+                            continue
+
+                        current_task = tg.create_task(
+                            self._process_request(
+                                config,
+                                history,
+                                [
+                                    types.Part.from_bytes(
+                                        data=event.audio_data,
+                                        mime_type="audio/wav",
+                                    ),
+                                    types.Part.from_text(
+                                        text="Follow the instructions in this audio."
+                                    ),
+                                ],
+                            )
+                        )
 
 
 if __name__ == "__main__":

@@ -3,12 +3,14 @@ name = "roblox-ai-vibe-coder"
 version = "0.1.0"
 description = "Roblox Studio MCP integration with Gemini"
 dependencies = [
+    "fastapi>=0.127.0",
     "google-genai",
     "mcp",
     "numpy>=2.4.0",
     "pynput>=1.8.1",
     "python-dotenv",
     "sounddevice>=0.5.3",
+    "uvicorn>=0.40.0",
 ]
 
 [tool.uv]
