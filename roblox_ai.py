@@ -200,9 +200,9 @@ class RobloxAIWrapper:
 
         # Gemini Client Configuration with retry logic
         retry_options = types.HttpRetryOptions(
-            attempts=3,
-            initial_delay=1.0,
-            max_delay=30.0,
+            attempts=5,
+            initial_delay=2.0,
+            max_delay=60.0,
             exp_base=2.0,
             jitter=0.1,
             http_status_codes=[429, 503, 404],
@@ -219,6 +219,7 @@ class RobloxAIWrapper:
             "/Applications/RobloxStudioMCP.app/Contents/MacOS/rbx-studio-mcp"
         )
         self.plan_manager = PlanManager()
+        self.n_last_thoughts = int(os.environ.get("N_LAST_THOUGHTS", 3))
 
     async def _handle_tool_call(self, session, tc):
         """Executes a single tool call and returns the result text."""
@@ -291,29 +292,7 @@ class RobloxAIWrapper:
         mcp_res = None
         res_text = None
 
-        if tc.name == "manage_plan":
-            action = tc.args.get("action")
-            if action == "create":
-                goal = tc.args.get("task")
-                todos = tc.args.get("todos", [])
-                res_text = self.plan_manager.create_plan(goal, todos)
-            elif action == "update_todo":
-                idx = tc.args.get("todo_index")
-                status = tc.args.get("status")
-                # Convert 1-based index to 0-based
-                res_text = self.plan_manager.update_todo(idx - 1, status)
-            elif action == "add_note":
-                note = tc.args.get("note")
-                res_text = self.plan_manager.add_note(note)
-            elif action == "clear":
-                res_text = self.plan_manager.clear_plan()
-            print(f"[*] Plan Manager: {res_text}")
-
-            # Print the full updated plan for the user to see immediately
-            if action != "clear":
-                print(self.plan_manager.get_context_string())
-
-        elif tc.name == "inspect_service":
+        if tc.name == "inspect_service":
             service = tc.args.get("service_name", "Workspace")
             depth = tc.args.get("depth", 4)
             print(f"[*] Inspecting {service} hierarchy (depth {depth})...")
@@ -726,29 +705,14 @@ class RobloxAIWrapper:
                 "- Deployment: Use 'publish_game' when the user is happy. INFORM them it requires manual confirmation (y/n).\n\n"
                 "CRITICAL: Be proactive. If you find a bug, FIX IT immediately using your manipulation tools. Don't just suggest the fix; apply it."
             ),
-            thinking_config=types.ThinkingConfig(include_thoughts=True),
+            thinking_config=types.ThinkingConfig(
+                include_thoughts=True,
+            ),
         )
 
     async def _process_request(self, session, config, history, content_parts):
         """Internal method to run a Gemini generation cycle, can be cancelled."""
         try:
-            # Inject Plan Context
-            plan_context = self.plan_manager.get_context_string()
-            if plan_context:
-                # Prepend to the first text part, or add a new text part
-                print(f"\n[!] Injecting Plan Context:\n{plan_context}")
-                if content_parts and hasattr(content_parts[0], "text"):
-                    # We create a new list to avoid modifying the passed reference unexpectedly
-                    # though here we are constructing the list in the caller usually.
-                    # Let's just prepend a text part.
-                    content_parts.insert(
-                        0, types.Part.from_text(text=plan_context)
-                    )
-                else:
-                    content_parts.insert(
-                        0, types.Part.from_text(text=plan_context)
-                    )
-
             history.append(types.Content(role="user", parts=content_parts))
 
             while True:
@@ -778,12 +742,28 @@ class RobloxAIWrapper:
                                 f"\n\n[*] AI Call: {part.function_call.name}({json.dumps(part.function_call.args)})"
                             )
 
+                # Append the full response to history (including thoughts)
                 history.append(
                     types.Content(
                         role="model",
                         parts=current_response_parts,
                     )
                 )
+
+                # Prune older thoughts based on N_LAST_THOUGHTS to prevent 429 RESOURCE_EXHAUSTED
+                if self.n_last_thoughts != -1:
+                    model_turn_count = 0
+                    for i in range(len(history) - 1, -1, -1):
+                        msg = history[i]
+                        if msg.role == "model":
+                            model_turn_count += 1
+                            if model_turn_count > self.n_last_thoughts:
+                                # Strip thought parts from this older model message
+                                msg.parts = [
+                                    p
+                                    for p in msg.parts
+                                    if not getattr(p, "thought", False)
+                                ]
 
                 if tool_calls:
                     response_parts = []

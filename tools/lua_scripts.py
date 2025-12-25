@@ -141,13 +141,22 @@ local output = "--- Marketplace Search Results for '" .. query .. "' ---\\n"
 
 if success then
     if result then
-        local pages = result:GetCurrentPage()
-        if #pages == 0 then
-            print("0 results found for '" .. query .. "'. \\nTIP: Try broader 1-2 word keywords (e.g., 'tombstone' instead of 'spooky mossy graveyard stone').")
+        local items = {}
+        if type(result) == "table" then
+            if result.Results then items = result.Results
+            elseif result[1] and result[1].Results then items = result[1].Results
+            else items = result end
+        elseif type(result) == "userdata" and result.GetCurrentPage then
+            items = result:GetCurrentPage()
+        end
+
+        if not items or #items == 0 then
+            print("0 results found for '" .. query .. "'. \nTIP: Try broader 1-2 word keywords.")
         else
-            for i = 1, math.min(5, #pages) do
-                local item = pages[i]
-                output = output .. i .. ". " .. item.Name .. " (Creator: " .. item.CreatorName .. ", AssetID: " .. item.AssetId .. ")\\n"
+            for i = 1, math.min(5, #items) do
+                local item = items[i]
+                local id = item.AssetId or item.AssetID or item.Id or item.ID
+                output = output .. i .. ". " .. item.Name .. " (Creator: " .. (item.CreatorName or "Unknown") .. ", AssetID: " .. tostring(id) .. ")\\n"
             end
             print(output)
         end
@@ -708,33 +717,20 @@ local success, result = pcall(function()
     if not search then error("Marketplace search returned nil for query: " .. query) end
     
     local items = {{}}
-    if type(search) == "table" and search.Results then
-        items = search.Results
+    if type(search) == "table" then
+        if search.Results then items = search.Results
+        elseif search[1] and search[1].Results then items = search[1].Results
+        else items = search end
     elseif type(search) == "userdata" and search.GetCurrentPage then
         items = search:GetCurrentPage()
-    else
-        items = search
-    end
-    
-    -- Some API versions wrap the actual array in the first element
-    if type(items) == "table" and items[1] and type(items[1]) == "table" and items[1].Results then
-        items = items[1].Results
     end
     
     -- Robust key detection for the first item
-    local firstItem = type(items) == "table" and (items[1] or items) or {{}}
+    local firstItem = (type(items) == "table" and items[1]) or (type(items) == "table" and items) or {{}}
     local assetId = firstItem.AssetId or firstItem.AssetID or firstItem.Id or firstItem.ID
     
     if not assetId then
-        local keys = ""
-        local info = "Type: " .. type(firstItem)
-        for k,v in pairs(firstItem) do 
-            keys = keys .. k .. "," 
-            if type(v) ~= "table" and type(v) ~= "userdata" then
-                info = info .. " [" .. k .. "=" .. tostring(v) .. "]"
-            end
-        end
-        error("Smart Setup: No ID found. Keys: " .. keys .. ". Info: " .. info)
+        error("Smart Setup: No valid Asset ID found in search results for '" .. query .. "'.")
     end
     
     local model = InsertService:LoadAsset(assetId)
@@ -898,17 +894,12 @@ if success and result then
     local items = {{}}
     
     -- Robust multi-level unpacking
-    if type(result) == "table" and result.Results then
-        items = result.Results
+    if type(result) == "table" then
+        if result.Results then items = result.Results
+        elseif result[1] and result[1].Results then items = result[1].Results
+        else items = result end
     elseif type(result) == "userdata" and result.GetCurrentPage then
         items = result:GetCurrentPage()
-    else
-        items = result
-    end
-
-    -- Some API versions wrap the actual array in the first element
-    if type(items) == "table" and items[1] and type(items[1]) == "table" and items[1].Results then
-        items = items[1].Results
     end
 
     if type(items) ~= "table" or #items == 0 then
@@ -923,13 +914,13 @@ if success and result then
                     count = count + 1
                     local name = item.Name or item.name or "Unknown"
                     local creator = item.CreatorName or (item.Creator and item.Creator.Name) or "Unknown"
-                    print(string.format("- %s (ID: %d) - by %s", name, id, creator))
+                    print(string.format("- %s (ID: %s) - by %s", name, tostring(id), creator))
                 end
             end
             if count >= 10 then break end
         end
         if count == 0 then print("0 valid assets found in results.") end
-        print("TIP: Use 'insert_model' with the specific Name or Asset ID from this list.")
+        print("TIP: Use 'insert_model' with the specific Asset ID from this list.")
     end
 else
     print("Error searching marketplace: " .. tostring(result))
