@@ -48,6 +48,7 @@ from tools.lua_scripts import (
     GET_SPATIAL_SUMMARY_LUA,
     SEARCH_MARKETPLACE_LUA,
     REPARENT_INSTANCE_LUA,
+    CONNECT_PARTS_LUA,
 )
 
 # Load environment variables from .env
@@ -522,6 +523,23 @@ class RobloxAIWrapper:
             print(f"[*] Fetching relative spatial summary...")
             mcp_res = await run_studio_code(GET_SPATIAL_SUMMARY_LUA)
 
+        elif tc.name == "connect_parts":
+            part_a = fix_path(tc.args["part_a"])
+            part_b = fix_path(tc.args["part_b"])
+            c_type = tc.args.get("constraint_type", "Weld")
+            axis = tc.args.get("axis", "Y")
+            mode = tc.args.get("anchor_mode", "Center")
+
+            print(f"[*] Connecting {part_a} to {part_b} via {c_type}...")
+            lua_command = CONNECT_PARTS_LUA.format(
+                part_a=part_a,
+                part_b=part_b,
+                constraint_type=c_type,
+                axis=axis,
+                anchor_mode=mode,
+            )
+            mcp_res = await run_studio_code(lua_command)
+
         else:
             print(f"[*] Executing {tc.name} in Roblox Studio...")
             cmd = tc.args.get("command") or tc.args.get("code")
@@ -656,7 +674,8 @@ class RobloxAIWrapper:
                 "5. CONTEXT AWARENESS: Use 'get_studio_state' to see if you are in Edit Mode or Play Mode. Use 'get_spatial_summary' frequently to 'see' the world.\n"
                 "6. DEBUGGING: Be proactive. If an asset fails to load or a property seems wrong, check the logs. Use `edit_script_source` to fix bugs immediately.\n"
                 "7. SPATIAL LOGIC: Use `get_spatial_summary` to understand surroundings. +X is Right, -X is Left, +Y is Up, -Y is Down, -Z is Front, +Z is Back.\n"
-                "8. SCRIPT EDITING: The system now pre-validates syntax. If you make a typo, the tool will reject the edit and tell you why. Fix it and try again.\n\n"
+                "8. SCRIPT EDITING: The system now pre-validates syntax. If you make a typo, the tool will reject the edit and tell you why. Fix it and try again.\n"
+                "9. PHYSICS: Use `connect_parts` for all mechanical joints (welds, hinges). Do not try to manually create Attachments and Constraints with `create_instance`.\n\n"
                 "WORKFLOW:\n"
                 "- UI Design: Create the full structure in one `create_instance` call.\n"
                 "- Building: Use `generate_procedural_terrain` then `smart_setup_asset`. Objects will land on the ground automatically.\n"
