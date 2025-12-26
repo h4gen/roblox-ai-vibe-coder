@@ -1,17 +1,18 @@
 local InsertService = game:GetService("InsertService")
 local MarketplaceService = game:GetService("MarketplaceService")
-local query = "{query}"
-local posStr = "{position}"
+local query = args.query
+local posStr = args.position or "0,5,0"
 
 local function toVec3(s)
-    local x,y,z = s:match("([^,]+),([^,]+),([^,]+)")
+    if type(s) == "table" then return Vector3.new(s.x or s[1], s.y or s[2], s.z or s[3]) end
+    local x,y,z = tostring(s):match("([^,]+),([^,]+),([^,]+)")
     if not x then return Vector3.new(0,5,0) end
     return Vector3.new(tonumber(x), tonumber(y), tonumber(z))
 end
 
 local function getGround(pos)
     local params = RaycastParams.new()
-    params.FilterDescendantsInstances = {{workspace:FindFirstChild("Baseplate")}}
+    params.FilterDescendantsInstances = {workspace:FindFirstChild("Baseplate")}
     params.FilterType = Enum.RaycastFilterType.Include
     local ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), params)
     if not ray then
@@ -20,13 +21,11 @@ local function getGround(pos)
     return ray and ray.Position or pos
 end
 
-print("--- Smart Asset Setup: " .. query .. " ---")
-
-local success, result = pcall(function()
+local success, res = pcall(function()
     local search = InsertService:GetFreeModels(query, 0)
     if not search then error("Marketplace search returned nil for query: " .. query) end
     
-    local items = {{}}
+    local items = {}
     if type(search) == "table" then
         if search.Results then items = search.Results
         elseif search[1] and search[1].Results then items = search[1].Results
@@ -58,16 +57,13 @@ local success, result = pcall(function()
         local item = items[i]
         if item then
             local assetId = item.AssetId or item.AssetID or item.Id or item.ID
-            
             if assetId then
                 local m, err = loadAsset(assetId)
                 if m then
                     model = m
-                    print("Successfully loaded asset ID: " .. assetId)
                     break
                 else
                     lastError = tostring(err)
-                    print("Failed to load asset ID " .. assetId .. ": " .. lastError)
                 end
             end
         end
@@ -78,9 +74,7 @@ local success, result = pcall(function()
     end
     
     model.Parent = workspace
-    
     local targetPos = toVec3(posStr)
-    -- Auto-grounding: search for surface
     local groundedPos = getGround(targetPos)
     model:MoveTo(groundedPos)
     model:MakeJoints()
@@ -88,7 +82,7 @@ local success, result = pcall(function()
     local payload = nil
     local category = "Unknown"
     
-    -- Handle Kit Installers (Ungroup in X)
+    -- Handle Kit Installers
     for _, item in ipairs(model:GetDescendants()) do
         if item.Name == "Ungroup in Workspace" then
             for _, child in ipairs(item:GetChildren()) do child.Parent = workspace end
@@ -108,7 +102,6 @@ local success, result = pcall(function()
         end
     end
     
-    -- Scan for Tools
     for _, item in ipairs(model:GetDescendants()) do
         if item:IsA("Tool") then
             item.Parent = game:GetService("StarterPack")
@@ -118,7 +111,6 @@ local success, result = pcall(function()
         end
     end
     
-    -- Scan for NPCs
     if not payload then
         for _, item in ipairs(model:GetDescendants()) do
             if item:IsA("Humanoid") then
@@ -132,18 +124,12 @@ local success, result = pcall(function()
     end
     
     local finalPath = payload and payload:GetFullName() or model:GetFullName()
-    print("Successfully setup " .. category .. " at " .. finalPath)
-    
-    -- Cleanup empty wrapper if payload was moved
-    if payload and payload.Parent ~= model then
-        model:Destroy()
-    end
-    
+    if payload and payload.Parent ~= model then model:Destroy() end
     return finalPath
 end)
 
 if not success then
-    return "Error in smart setup: " .. tostring(result)
+    return "Error in smart setup: " .. tostring(res)
 else
-    return "Successfully setup asset at " .. tostring(result)
+    return "Successfully setup asset at " .. tostring(res)
 end

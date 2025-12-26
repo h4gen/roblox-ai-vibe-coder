@@ -6,6 +6,7 @@ import traceback
 import io
 import wave
 import threading
+import argparse
 from dataclasses import dataclass
 from typing import Optional, List, Any
 import httpx  # For talking to the local server
@@ -20,38 +21,6 @@ from dotenv import load_dotenv
 # Import tools from the new tools directory
 from tools.definitions import get_virtual_tool_definitions
 from tools.planner import PlanManager
-from tools.lua_scripts import (
-    INSPECT_SERVICE_LUA,
-    READ_SCRIPT_LUA,
-    EDIT_SCRIPT_LUA,
-    PATCH_SCRIPT_LUA,
-    GET_LOGS_LUA,
-    CLEAR_LOGS_LUA,
-    SEARCH_SCRIPTS_LUA,
-    GET_OBJECT_INFO_LUA,
-    MANAGE_TAGS_LUA,
-    RUN_TESTS_LUA,
-    GET_STATS_LUA,
-    GET_PROPERTIES_LUA,
-    SET_PROPERTY_LUA,
-    FIND_INSTANCES_LUA,
-    CREATE_INSTANCE_LUA,
-    DELETE_INSTANCE_LUA,
-    RAYCAST_LUA,
-    PUBLISH_GAME_LUA,
-    MODIFY_INSTANCE_LUA,
-    GET_STUDIO_STATE_LUA,
-    MANIPULATE_TERRAIN_LUA,
-    GENERATE_TERRAIN_LUA,
-    SMART_SETUP_LUA,
-    SCATTER_LUA,
-    CREATE_SPAWNER_LUA,
-    GET_SPATIAL_SUMMARY_LUA,
-    SEARCH_MARKETPLACE_LUA,
-    REPARENT_INSTANCE_LUA,
-    CONNECT_PARTS_LUA,
-    CONFIGURE_LIGHTING_LUA,
-)
 
 # Load environment variables from .env
 load_dotenv()
@@ -135,6 +104,7 @@ class RobloxAIWrapper:
         self,
         api_key: str | None = None,
         model_id: str = "gemini-3-flash-preview",
+        debug_mode: bool = False,
     ):
         self.api_key = (
             api_key
@@ -164,6 +134,7 @@ class RobloxAIWrapper:
             api_key=self.api_key, http_options=http_options
         )
         self.model_id = model_id
+        self.debug_mode = debug_mode
 
         # New API Connection
         self.api_url = "http://127.0.0.1:8000"
@@ -173,65 +144,7 @@ class RobloxAIWrapper:
         self.n_last_thoughts = int(os.environ.get("N_LAST_THOUGHTS", 3))
 
     async def _handle_tool_call(self, tc):
-        """Executes a single tool call by sending it to the local API server."""
-
-        def to_lua_value(v):
-            if isinstance(v, bool):
-                return "true" if v else "false"
-            elif isinstance(v, (int, float)):
-                return str(v)
-            elif isinstance(v, str):
-                return f"[===[{v}]===]"
-            elif isinstance(v, dict):
-                items = []
-                for k, val in v.items():
-                    items.append(f'["{k}"] = {to_lua_value(val)}')
-                return "{" + ", ".join(items) + "}"
-            elif isinstance(v, list):
-                items = [to_lua_value(item) for item in v]
-                return "{" + ", ".join(items) + "}"
-            else:
-                return f'"{str(v)}"'
-
-        def dict_to_lua_table(d):
-            if not isinstance(d, dict):
-                return to_lua_value(d)
-            return to_lua_value(d)
-
-        def fix_path(path):
-            if not path or not isinstance(path, str):
-                return path
-            services = [
-                "Workspace",
-                "Lighting",
-                "ReplicatedStorage",
-                "ServerStorage",
-                "ServerScriptService",
-                "StarterGui",
-                "StarterPack",
-                "Players",
-                "LogService",
-                "RunService",
-                "SoundService",
-                "CollectionService",
-                "TweenService",
-                "Debris",
-            ]
-            path_lower = path.lower()
-            for s in services:
-                s_lower = s.lower()
-                if path_lower == s_lower or path_lower.startswith(
-                    s_lower + "."
-                ):
-                    suffix = path[len(s) :] if len(path) > len(s) else ""
-                    return f"game.{s}{suffix}"
-            if (
-                path == "game"
-                or path.startswith("game.")
-                or path.startswith("workspace")
-            ):
-                return path
-            return path
+        """Executes a tool call by loading Lua dynamically and passing args via JSON."""
 
         async def run_studio_code(lua_command):
             # Send code to the server's queue
@@ -263,8 +176,17 @@ class RobloxAIWrapper:
                         if data["status"] == "completed":
                             print(" [Done]")
                             result_data = data["result"]
-                            # The plugin returns { success: bool, output: str, error: str }
-                            # We want to return just the string text for the AI
+
+                            if self.debug_mode:
+                                print(
+                                    f"\n[DEBUG] Raw Server Response: {json.dumps(result_data, indent=2)}"
+                                )
+
+                            # If debug_mode is on, return raw JSON to AI
+                            if self.debug_mode:
+                                return json.dumps(result_data)
+
+                            # Normal mode: return string output
                             if isinstance(result_data, dict):
                                 if result_data.get("success"):
                                     return result_data.get("output", "Success")
@@ -278,276 +200,98 @@ class RobloxAIWrapper:
             except Exception as e:
                 return f"Failed to connect to Vibe Coder Server: {e}"
 
-        mcp_res = None
+        # 1. Load the Tool Logic
+        tool_file = os.path.join("tools", "lua", f"{tc.name}.lua")
+        if not os.path.exists(tool_file):
+            return f"Error: Tool implementation not found at {tool_file}"
 
-        # --- TOOL MAPPING ---
-        lua_command = None
+        with open(tool_file, "r") as f:
+            tool_code = f.read()
 
-        if tc.name == "inspect_service":
-            service = tc.args.get("service_name", "Workspace")
-            depth = tc.args.get("depth", 4)
-            print(f"[*] Inspecting {service} hierarchy (depth {depth})...")
-            lua_command = INSPECT_SERVICE_LUA.format(
-                service=service, depth=depth
-            )
+        # 2. Prepare the Safe Header and JSON Data
+        args_json = json.dumps(tc.args)
 
-        elif tc.name == "read_script_source":
-            script_path = fix_path(tc.args["script_path"])
-            print(f"[*] Reading script source: {script_path}...")
-            lua_command = READ_SCRIPT_LUA.format(script_path=script_path)
+        # SafeResolve handles hyphens, spaces, and bracket notation automatically
+        safe_resolve_lua = """
+local function SafeResolve(path)
+    if not path or path == "" then return nil end
+    if typeof(path) ~= "string" then return path end
+    
+    local current = game
+    
+    -- 1. Clean the path of bracket notation game.Workspace["Part Name"] -> game.Workspace.Part Name
+    local cleanPath = path:gsub('%%["', "."):gsub('"%%]', ""):gsub("%%['", "."):gsub("'%%]", "")
+    
+    -- 2. Normalize separators
+    cleanPath = cleanPath:gsub("/", "."):gsub("\\\\\\\\", ".")
+    
+    local parts = {}
+    for part in cleanPath:gmatch("([^%%.]+)") do
+        if part ~= "" then
+            table.insert(parts, part)
+        end
+    end
 
-        elif tc.name == "edit_script_source":
-            script_path = fix_path(tc.args["script_path"])
-            new_source = tc.args["new_source"]
-            print(f"[*] Editing script: {script_path}...")
-            lua_command = EDIT_SCRIPT_LUA.format(
-                script_path=script_path, new_source=new_source
-            )
+    for i, name in ipairs(parts) do
+        -- Skip 'game' if it's the first part
+        if i == 1 and (name:lower() == "game" or name:lower() == "workspace") then
+            if name:lower() == "workspace" then current = workspace end
+        else
+            local nextObj = current:FindFirstChild(name)
+            
+            -- If not found directly, and we're at game level, try GetService
+            if not nextObj and current == game then
+                local success, service = pcall(function() return game:GetService(name) end)
+                if success and service then
+                    nextObj = service
+                end
+            end
+            
+            if not nextObj then
+                return nil, "Could not find child '" .. name .. "' in " .. current:GetFullName()
+            end
+            current = nextObj
+        end
+    end
+    
+    return current
+end
+"""
 
-        elif tc.name == "patch_script_source":
-            script_path = fix_path(tc.args["script_path"])
-            search_string = tc.args["search_string"]
-            replace_string = tc.args.get("replace_string") or tc.args.get(
-                "patch_string"
-            )
-            if not replace_string:
-                return "Error: Missing 'replace_string'."
-            print(f"[*] Patching script: {script_path}...")
-            lua_command = PATCH_SCRIPT_LUA.format(
-                script_path=script_path,
-                search_string=search_string,
-                replace_string=replace_string,
-            )
+        full_lua_command = f"""
+local HttpService = game:GetService("HttpService")
+local args = HttpService:JSONDecode([===[{args_json}]===])
 
-        elif tc.name == "get_studio_logs":
-            count = tc.args.get("line_count", 50)
-            print(f"[*] Fetching last {count} lines of Studio logs...")
-            lua_command = GET_LOGS_LUA.format(count=count)
+{safe_resolve_lua}
 
-        elif tc.name == "clear_studio_logs":
-            print(f"[*] Marking start of new debug session in logs...")
-            lua_command = CLEAR_LOGS_LUA
+-- EXECUTE TOOL
+local function run()
+{tool_code}
+end
 
-        elif tc.name == "search_scripts":
-            pattern = tc.args["pattern"]
-            print(f"[*] Searching scripts for: '{pattern}'...")
-            lua_command = SEARCH_SCRIPTS_LUA.format(pattern=pattern)
+local success, result = pcall(run)
+if success then
+    return result
+else
+    return "Runtime Error in tool '{tc.name}': " .. tostring(result)
+end
+"""
 
-        elif tc.name == "get_object_info":
-            path = fix_path(tc.args["path"])
-            print(f"[*] Fetching info for: {path}...")
-            lua_command = GET_OBJECT_INFO_LUA.format(path=path)
+        # 3. Execute
+        main_res = await run_studio_code(full_lua_command)
 
-        elif tc.name == "manage_tags":
-            action = tc.args["action"]
-            tag = tc.args["tag"]
-            path = fix_path(tc.args.get("path", "nil"))
-            print(f"[*] Managing tag '{tag}' (Action: {action})...")
-            lua_command = MANAGE_TAGS_LUA.format(
-                path=path, action=action, tag=tag
-            )
+        # 4. Append logs in debug mode
+        if self.debug_mode and tc.name != "get_studio_logs":
+            try:
+                log_fetch_lua = 'local logs = game:GetService("LogService"):GetLogHistory(); local res = ""; for i = math.max(1, #logs-20), #logs do res = res .. "[" .. logs[i].messageType.Name .. "] " .. logs[i].message .. "\\n" end; return res'
+                logs_res = await run_studio_code(log_fetch_lua)
+                main_res = (
+                    f"{main_res}\\n\\n[DEBUG: RECENT STUDIO LOGS]\\n{logs_res}"
+                )
+            except:
+                pass
 
-        elif tc.name == "run_unit_tests":
-            print(f"[*] Running unit tests...")
-            lua_command = RUN_TESTS_LUA
-
-        elif tc.name == "get_performance_stats":
-            print(f"[*] Fetching performance stats...")
-            lua_command = GET_STATS_LUA
-
-        elif tc.name == "get_properties":
-            path = fix_path(tc.args["path"])
-            print(f"[*] Fetching properties for: {path}...")
-            lua_command = GET_PROPERTIES_LUA.format(path=path)
-
-        elif tc.name == "set_property":
-            path = fix_path(tc.args["path"])
-            prop = tc.args["property"]
-            val = tc.args["value"]
-            print(f"[*] Setting {prop} on {path} to {val}...")
-            lua_command = SET_PROPERTY_LUA.format(
-                path=path, property=prop, value=val
-            )
-
-        elif tc.name == "find_instances":
-            root = fix_path(tc.args.get("root_path", "game"))
-            cls = tc.args.get("class_name", "")
-            pat = tc.args.get("name_pattern", "")
-            print(
-                f"[*] Finding instances in {root} (Class: {cls}, Pat: {pat})..."
-            )
-            lua_command = FIND_INSTANCES_LUA.format(
-                root_path=root, class_name=cls, name_pattern=pat
-            )
-
-        elif tc.name == "create_instance":
-            cls = tc.args["class_name"]
-            parent = fix_path(tc.args["parent_path"])
-            name = tc.args.get("name", cls)
-            props = tc.args.get("properties", {})
-            children = tc.args.get("children", [])
-
-            def children_to_lua(kids):
-                if not kids or not isinstance(kids, list):
-                    return "{}"
-                items = []
-                for kid in kids:
-                    if not isinstance(kid, dict):
-                        continue
-                    k_cls = kid.get("class_name")
-                    if not k_cls:
-                        continue
-                    k_name = kid.get("name", k_cls)
-                    k_props = dict_to_lua_table(kid.get("properties", {}))
-                    k_kids = children_to_lua(kid.get("children", []))
-                    items.append(
-                        f'{{class_name="{k_cls}", name="{k_name}", properties={k_props}, children={k_kids}}}'
-                    )
-                return "{" + ", ".join(items) + "}"
-
-            print(f"[*] Creating {cls} '{name}' in {parent}...")
-            lua_command = CREATE_INSTANCE_LUA.format(
-                class_name=cls,
-                parent_path=parent,
-                name=name,
-                props_table=dict_to_lua_table(props),
-                children_table=children_to_lua(children),
-            )
-
-        elif tc.name == "delete_instance":
-            path = fix_path(tc.args["path"])
-            print(f"[*] Deleting instance: {path}...")
-            lua_command = DELETE_INSTANCE_LUA.format(path=path)
-
-        elif tc.name == "raycast_check":
-            origin = tc.args["origin"]
-            direction = tc.args["direction"]
-            print(f"[*] Casting ray from {origin}...")
-            lua_command = RAYCAST_LUA.format(origin=origin, direction=direction)
-
-        elif tc.name == "publish_game":
-            print(f"[*] Publishing game to Roblox Cloud...")
-            lua_command = PUBLISH_GAME_LUA
-
-        elif tc.name == "modify_instance":
-            path = fix_path(tc.args["path"])
-            props = tc.args["properties"]
-            print(f"[*] Bulk modifying properties on {path}...")
-            lua_command = MODIFY_INSTANCE_LUA.format(
-                path=path, props_table=dict_to_lua_table(props)
-            )
-
-        elif tc.name == "get_studio_state":
-            print(f"[*] Fetching Studio state...")
-            lua_command = GET_STUDIO_STATE_LUA
-
-        elif tc.name == "manipulate_terrain":
-            action = tc.args["action"]
-            pos = tc.args["position"]
-            size = tc.args["size"]
-            mat = tc.args.get("material", "Grass")
-            print(f"[*] Manipulating terrain ({action}, {mat}) at {pos}...")
-            lua_command = MANIPULATE_TERRAIN_LUA.format(
-                action=action, position=pos, size=size, material=mat
-            )
-
-        elif tc.name == "generate_procedural_terrain":
-            pos_str = tc.args["position"]
-            size_str = tc.args["size"]
-            # ... (parsing logic same as before)
-            px, py, pz = pos_str.replace(" ", "").split(",")
-            width, depth = size_str.replace(" ", "").split(",")
-            print(f"[*] Generating terrain...")
-            lua_command = GENERATE_TERRAIN_LUA.format(
-                x=px,
-                y=py,
-                z=pz,
-                width=width,
-                depth=depth,
-                scale=tc.args.get("scale", 100),
-                amplitude=tc.args.get("amplitude", 50),
-                material=tc.args.get("material", "Grass"),
-                biome=tc.args.get("biome", "hills"),
-            )
-
-        elif tc.name == "smart_setup_asset":
-            query = tc.args["query"]
-            pos = tc.args.get("position", "0,5,0")
-            print(f"[*] Smart-setting up asset: {query}...")
-            lua_command = SMART_SETUP_LUA.format(query=query, position=pos)
-
-        elif tc.name == "search_marketplace":
-            query = tc.args["query"]
-            asset_type = tc.args.get("asset_type", "Model")
-            print(f"[*] Searching marketplace: {query}...")
-            lua_command = SEARCH_MARKETPLACE_LUA.format(
-                query=query, asset_type=asset_type
-            )
-
-        elif tc.name == "reparent_instance":
-            path = fix_path(tc.args["path"])
-            new_parent = fix_path(tc.args["new_parent"])
-            print(f"[*] Reparenting {path}...")
-            lua_command = REPARENT_INSTANCE_LUA.format(
-                path=path, new_parent=new_parent
-            )
-
-        elif tc.name == "scatter_objects":
-            path = fix_path(tc.args["path"])
-            # ... (args same as before)
-            print(f"[*] Scattering objects...")
-            lua_command = SCATTER_LUA.format(
-                path=path,
-                count=tc.args.get("count", 10),
-                radius=tc.args.get("radius", 100),
-                align_to_surface=str(
-                    tc.args.get("align_to_surface", False)
-                ).lower(),
-                random_rotation=str(
-                    tc.args.get("random_rotation", True)
-                ).lower(),
-            )
-
-        elif tc.name == "create_timed_spawner":
-            print(f"[*] Creating timed spawner...")
-            lua_command = CREATE_SPAWNER_LUA.format(
-                template_path=fix_path(tc.args["template_path"]),
-                container_name=tc.args.get("container_name", "SpawnedObjects"),
-                interval=tc.args.get("interval", 5),
-                max_count=tc.args.get("max_count", 10),
-                spawn_area_center=tc.args.get("spawn_area_center", "0,10,0"),
-                spawn_radius=tc.args.get("spawn_radius", 100),
-            )
-
-        elif tc.name == "get_spatial_summary":
-            print(f"[*] Fetching relative spatial summary...")
-            lua_command = GET_SPATIAL_SUMMARY_LUA.format()
-
-        elif tc.name == "connect_parts":
-            print(f"[*] Connecting parts...")
-            lua_command = CONNECT_PARTS_LUA.format(
-                part_a=fix_path(tc.args["part_a"]),
-                part_b=fix_path(tc.args["part_b"]),
-                constraint_type=tc.args.get("constraint_type", "Weld"),
-                axis=tc.args.get("axis", "Y"),
-                anchor_mode=tc.args.get("anchor_mode", "Center"),
-            )
-
-        elif tc.name == "configure_lighting":
-            preset = tc.args.get("preset", "RealisticDay")
-            print(f"[*] Configuring lighting to preset: {preset}...")
-            lua_command = CONFIGURE_LIGHTING_LUA.format(preset=preset)
-
-        elif tc.name == "run_code":
-            cmd = tc.args.get("command") or tc.args.get("code")
-            if cmd:
-                lua_command = cmd
-
-        # Execute
-        if lua_command:
-            return await run_studio_code(lua_command)
-
-        return "Tool not implemented or no Lua command generated."
+        return main_res
 
     def _get_gemini_config(self, mcp_tools=None):
         """Creates the Gemini model configuration with virtual tools."""
@@ -561,17 +305,21 @@ class RobloxAIWrapper:
                 "You are an Elite Roblox Studio Game Engineer and AI Agent. You don't just write code; you build high-fidelity, atmospheric game worlds.\n\n"
                 "YOUR CORE PRINCIPLES:\n"
                 "1. SMART CREATION: Use `create_instance` with the `children` parameter to build hierarchies. Use this for UI and mechanical structures.\n"
-                "2. QUALITY ASSETS: Always prefer `smart_setup_asset` for environmental objects (Trees, Graves, Buildings). If a search for 'Tombstone' fails, you MUST retry with 3 synonyms (e.g., 'Grave', 'Gravestone', 'Old Stone') before concluding the asset is unavailable. DO NOT build crude part-based versions (cylinders/blocks) for scenery. The player wants a professional look.\n"
-                "3. GROUND AWARENESS: Your building tools (`smart_setup_asset`, `create_instance`) automatically snap to the ground. For `scatter_objects`, use `align_to_surface=false` for man-made structures (Houses, Graves) and growing things (Trees) to keep them vertical and embedded. Use `align_to_surface=true` only for debris or rocks that should tilt with the hill.\n"
-                "4. ATMOSPHERE & LIGHTING: Use `configure_lighting` to set a base mood. TRUST THE PRESETS. Do not manually override `Brightness`, `Ambient`, or `Fog` properties immediately after calling a preset, as they are professionally tuned. To create 'cool atmosphere', place Neon parts with `PointLight` children around the map (e.g., glowing green orbs in a graveyard).\n"
-                "5. CONTEXT AWARENESS: Use 'get_studio_state' to see if you are in Edit Mode or Play Mode. Use 'get_spatial_summary' frequently to 'see' the world.\n"
-                "6. DEBUGGING: Be proactive. If an asset fails to load or a property seems wrong, check the logs. Use `edit_script_source` to fix bugs immediately.\n"
-                "7. SCRIPT EDITING: The system pre-validates syntax. If you make a typo, fix it and try again.\n"
-                "8. PHYSICS: Use `connect_parts` for all mechanical joints (welds, hinges).\n"
-                "9. ROBUST SCRIPTING: When spawning Models, NEVER assume `PrimaryPart` is set. In your scripts, explicitely check `if not clone.PrimaryPart then clone.PrimaryPart = clone:FindFirstChild('HumanoidRootPart') end` before moving them.\n\n"
+                "2. QUALITY ASSETS: Always prefer `smart_setup_asset` for environmental objects. If a search fails, retry with 3 synonyms before concluding the asset is unavailable. Aim for high visual quality.\n"
+                "3. GROUND AWARENESS: Your building tools automatically snap to the ground. For `scatter_objects`, use `align_to_surface=false` for man-made structures and trees to keep them vertical.\n"
+                "4. ATMOSPHERE & LIGHTING: Use `configure_lighting` to set a base mood. TRUST THE PRESETS. Place Neon parts with `PointLight` children for 'cool atmosphere'.\n"
+                "5. CONTEXT & SPATIAL AWARENESS: Use 'get_studio_state' frequently to check if you are in EDIT_MODE or PLAY_MODE. Use 'get_spatial_summary' to 'see' the world. IMPORTANT: Many models have `PrimaryPart: nil`. For these, rely on the Bounding Box data provided by `get_object_info` and `get_spatial_summary`.\n"
+                "6. DEBUGGING & PROTOCOL: Be proactive. If an asset fails or a property seems wrong, check the logs. \n"
+                "   - EDIT_MODE PROTOCOL: In Edit Mode, regular `Script` and `ModuleScript` objects DO NOT RUN. For calculations, coordinate checking, or one-off debug tasks, ALWAYS use the `run_code` tool instead of creating a persistent script.\n"
+                "   - PLAY_MODE PROTOCOL: In Play Mode, use standard scripts for game logic.\n"
+                "7. SAFE PATH RESOLUTION: ALWAYS use the `SafeResolve(path)` helper in any Lua code you generate (e.g. for `run_code` or script templates). It handles hyphens, spaces, and service lookups automatically.\n"
+                "8. SCRIPT EDITING: The system pre-validates syntax. If you make a typo, fix it and try again.\n"
+                "9. PHYSICS: Use `connect_parts` for all mechanical joints (welds, hinges).\n"
+                "10. ROBUST SCRIPTING: When spawning Models, NEVER assume `PrimaryPart` is set. explicitely check and set it if needed: `if not clone.PrimaryPart then clone.PrimaryPart = clone:FindFirstChild('HumanoidRootPart') or clone:FindFirstChildWhichIsA('BasePart') end`.\n\n"
                 "WORKFLOW:\n"
                 "- UI Design: Create the full structure in one `create_instance` call.\n"
                 "- Building: Use `generate_procedural_terrain` then `smart_setup_asset`. Objects will land on the ground automatically.\n"
+                "- Calculation: Use `run_code` to perform immediate logic checks or find coordinates without creating messy scripts.\n"
                 "- Deployment: Use 'publish_game' when the user is happy.\n\n"
                 "CRITICAL: You are an expert. Don't be a lazy builder. Aim for high visual quality and natural placement."
             ),
@@ -659,13 +407,24 @@ class RobloxAIWrapper:
             print(f"\n[!] Error in process_request: {e}")
             traceback.print_exc()
 
+    async def run_once(self, command: str):
+        """Runs a single command to completion and then exits."""
+        print(f"[*] Running single command: {command}")
+        config = self._get_gemini_config()
+        history: List[types.Content] = []
+        await self._process_request(
+            config,
+            history,
+            [types.Part.from_text(text=command)],
+        )
+
     async def run_interactive(self):
         print(f"[*] Connecting to Plugin Server at {self.api_url}...")
 
         # We no longer need MCP connection logic
         config = self._get_gemini_config()
 
-        history = []
+        history: List[types.Content] = []
         event_queue = asyncio.Queue()
         voice_manager = VoiceManager(event_queue)
 
@@ -713,6 +472,14 @@ class RobloxAIWrapper:
                                 current_task.cancel()
                             break
 
+                        if event.text.strip().lower() == "/debug":
+                            self.debug_mode = not self.debug_mode
+                            status = (
+                                "ENABLED" if self.debug_mode else "DISABLED"
+                            )
+                            print(f"\n[*] Debug mode {status}")
+                            continue
+
                         if current_task and not current_task.done():
                             current_task.cancel()
 
@@ -752,5 +519,23 @@ class RobloxAIWrapper:
 
 
 if __name__ == "__main__":
-    wrapper = RobloxAIWrapper()
-    asyncio.run(wrapper.run_interactive())
+    parser = argparse.ArgumentParser(description="Roblox AI Studio Agent")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode (raw API responses and Studio logs)",
+    )
+    parser.add_argument(
+        "--command",
+        "-c",
+        type=str,
+        help="Run a single command and exit",
+    )
+    args = parser.parse_args()
+
+    wrapper = RobloxAIWrapper(debug_mode=args.debug)
+
+    if args.command:
+        asyncio.run(wrapper.run_once(args.command))
+    else:
+        asyncio.run(wrapper.run_interactive())

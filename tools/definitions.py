@@ -637,4 +637,18 @@ def get_virtual_tool_definitions():
                 "required": ["path", "template_name"],
             },
         ),
+        types.FunctionDeclaration(
+            name="run_code",
+            description="Executes arbitrary Lua code IMMEDIATELY in the Roblox Studio environment. Use this for calculations, debug prints, or one-off tasks that don't need a persistent script. MANDATORY: Use 'SafeResolve(path)' for all object access in your code.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "The Lua code to execute.",
+                    }
+                },
+                "required": ["code"],
+            },
+        ),
     ]

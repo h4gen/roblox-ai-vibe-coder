@@ -1,8 +1,8 @@
-local target = {path}
-local prop = "{property}"
-local valRaw = "{value}"
+local target, err = SafeResolve(args.path)
+local prop = args.property
+local valRaw = args.value
 
-if not target then print("Error: Object not found.") return end
+if not target then return "Error: Object not found. " .. (err or "") end
 
 local function convert(v, targetType)
     if targetType == "boolean" then return v == true or v == "true" or v == "1"
@@ -22,7 +22,7 @@ local function convert(v, targetType)
         if s:sub(1,1) == "#" then return Color3.fromHex(s) end
         
         -- Smart Color Names
-        local names = {{Red=Color3.new(1,0,0), Green=Color3.new(0,1,0), Blue=Color3.new(0,0,1), White=Color3.new(1,1,1), Black=Color3.new(0,0,0), Yellow=Color3.new(1,1,0), Cyan=Color3.new(0,1,1), Magenta=Color3.new(1,0,1), Grey=Color3.new(0.5,0.5,0.5)}}
+        local names = {Red=Color3.new(1,0,0), Green=Color3.new(0,1,0), Blue=Color3.new(0,0,1), White=Color3.new(1,1,1), Black=Color3.new(0,0,0), Yellow=Color3.new(1,1,0), Cyan=Color3.new(0,1,1), Magenta=Color3.new(1,0,1), Grey=Color3.new(0.5,0.5,0.5)}
         if names[s] then return names[s] end
         
         return Color3.fromHex(s) -- Try hex as fallback
@@ -33,8 +33,8 @@ local function convert(v, targetType)
         
     elseif targetType == "UDim2" then
         if type(v) == "table" then return UDim2.new(v[1], v[2], v[3], v[4]) end
-        local s = tostring(v):gsub("[{{}}]", "") -- Remove braces
-        local parts = {{}}
+        local s = tostring(v):gsub("[{}]", "") -- Remove braces
+        local parts = {}
         for p in s:gmatch("([^,]+)") do table.insert(parts, tonumber(p)) end
         if #parts == 4 then return UDim2.new(parts[1], parts[2], parts[3], parts[4]) end
         return UDim2.new(0,0,0,0)
@@ -48,7 +48,7 @@ local function convert(v, targetType)
         
     elseif targetType == "CFrame" then
         if type(v) == "table" then return CFrame.new(unpack(v)) end
-        local parts = {{}}
+        local parts = {}
         for p in tostring(v):gmatch("([^,]+)") do table.insert(parts, tonumber(p)) end
         if #parts == 3 then return CFrame.new(parts[1], parts[2], parts[3]) end
         if #parts >= 12 then return CFrame.new(unpack(parts)) end
@@ -60,10 +60,9 @@ end
 local currentVal = target[prop]
 local newVal = convert(valRaw, typeof(currentVal))
 
-local s, err = pcall(function() target[prop] = newVal end)
+local s, setErr = pcall(function() target[prop] = newVal end)
 if s then
-    print("Successfully set " .. prop .. " to " .. tostring(newVal))
+    return "Successfully set " .. prop .. " to " .. tostring(newVal)
 else
-    print("Error setting property: " .. tostring(err))
+    return "Error setting property: " .. tostring(setErr)
 end
-

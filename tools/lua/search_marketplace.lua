@@ -1,15 +1,13 @@
 local InsertService = game:GetService("InsertService")
-local query = "{query}"
+local query = args.query
 
 local success, result = pcall(function()
     return InsertService:GetFreeModels(query, 0)
 end)
 
-local output = "--- Marketplace Search Results for '" .. query .. "' ---\n"
-
 if success then
     if result then
-        local items = {{}}
+        local items = {}
         if type(result) == "table" then
             if result.Results then items = result.Results
             elseif result[1] and result[1].Results then items = result[1].Results
@@ -19,8 +17,9 @@ if success then
         end
 
         if not items or #items == 0 or (type(items) == "table" and #items >= 1 and items[1] == nil) then
-            return "0 results found for '" .. query .. "'. \nTIP: Try broader 1-2 word keywords."
+            return "0 results found for '" .. tostring(query) .. "'. TIP: Try broader keywords."
         else
+            local output = "--- Marketplace Search Results for '" .. tostring(query) .. "' ---\n"
             local count = 0
             for i = 1, #items do
                 local item = items[i]
@@ -31,9 +30,7 @@ if success then
                     if count >= 5 then break end
                 end
             end
-            if count == 0 then
-                return "0 results found for '" .. query .. "'. \nTIP: Try broader 1-2 word keywords."
-            end
+            if count == 0 then return "0 results found for '" .. tostring(query) .. "'." end
             return output
         end
     else

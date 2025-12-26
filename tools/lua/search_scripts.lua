@@ -1,5 +1,5 @@
-local pattern = "{pattern}"
-local results = "--- Search Results for '" .. pattern .. "' ---\n"
+local pattern = args.pattern
+local results = "--- Search Results for '" .. tostring(pattern) .. "' ---\n"
 local count = 0
 
 local function search(obj)
@@ -15,5 +15,4 @@ local function search(obj)
 end
 
 search(game)
-print(results .. "Total found: " .. count)
-
+return results .. "Total found: " .. count

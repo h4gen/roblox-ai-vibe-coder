@@ -1,22 +1,23 @@
 local CS = game:GetService("CollectionService")
-local target = {path}
-local action = "{action}"
-local tag = "{tag}"
-
-if not target then print("Error: Object not found.") return end
+local action = args.action
+local tag = args.tag
 
 if action == "add" then
+    local target, err = SafeResolve(args.path)
+    if not target then return "Error: Object not found. " .. (err or "") end
     CS:AddTag(target, tag)
-    print("Added tag '" .. tag .. "' to " .. target.Name)
+    return "Added tag '" .. tag .. "' to " .. target.Name
 elseif action == "remove" then
+    local target, err = SafeResolve(args.path)
+    if not target then return "Error: Object not found. " .. (err or "") end
     CS:RemoveTag(target, tag)
-    print("Removed tag '" .. tag .. "' from " .. target.Name)
+    return "Removed tag '" .. tag .. "' from " .. target.Name
 elseif action == "get" then
     local objects = CS:GetTagged(tag)
     local result = "--- Objects with tag '" .. tag .. "' ---\n"
     for _, obj in ipairs(objects) do
         result = result .. obj:GetFullName() .. "\n"
     end
-    print(result .. "Total: " .. #objects)
+    return result .. "Total: " .. #objects
 end
-
+return "Error: Unknown action '" .. tostring(action) .. "'"

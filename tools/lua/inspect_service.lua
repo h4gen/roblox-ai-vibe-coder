@@ -16,6 +16,13 @@ local function getHierarchy(obj, depth, maxDepth)
     end
     return result
 end
-local s = game:GetService("{service}")
-if s then return getHierarchy(s, 0, {depth}) else return "Error: Service '{service}' not found." end
 
+local service_name = args.service_name or "Workspace"
+local max_depth = args.depth or 4
+
+local success, s = pcall(function() return game:GetService(service_name) end)
+if success and s then 
+    return getHierarchy(s, 0, max_depth) 
+else 
+    return "Error: Service '" .. tostring(service_name) .. "' not found." 
+end
