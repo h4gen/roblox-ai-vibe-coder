@@ -6,13 +6,13 @@ if not parent then print("Error: Parent not found.") return end
 
 local function getGround(pos)
     local params = RaycastParams.new()
-    params.FilterDescendantsInstances = {workspace:FindFirstChild("Baseplate")}
+    params.FilterDescendantsInstances = {{workspace:FindFirstChild("Baseplate")}}
     params.FilterType = Enum.RaycastFilterType.Include
     local ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), params)
     if not ray then
         -- Fallback: Check for Terrain
         local tParams = RaycastParams.new()
-        tParams.FilterDescendantsInstances = {workspace.Terrain}
+        tParams.FilterDescendantsInstances = {{workspace.Terrain}}
         tParams.FilterType = Enum.RaycastFilterType.Include
         ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), tParams)
     end
@@ -40,7 +40,7 @@ local function convert(v, targetType)
         if r then return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b)) end
         if s:sub(1,1) == "#" then return Color3.fromHex(s) end
         
-        local names = {Red=Color3.new(1,0,0), Green=Color3.new(0,1,0), Blue=Color3.new(0,0,1), White=Color3.new(1,1,1), Black=Color3.new(0,0,0), Yellow=Color3.new(1,1,0), Cyan=Color3.new(0,1,1), Magenta=Color3.new(1,0,1), Grey=Color3.new(0.5,0.5,0.5)}
+        local names = {{Red=Color3.new(1,0,0), Green=Color3.new(0,1,0), Blue=Color3.new(0,0,1), White=Color3.new(1,1,1), Black=Color3.new(0,0,0), Yellow=Color3.new(1,1,0), Cyan=Color3.new(0,1,1), Magenta=Color3.new(1,0,1), Grey=Color3.new(0.5,0.5,0.5)}}
         if names[s] then return names[s] end
         
         return Color3.fromHex(s)
@@ -49,8 +49,8 @@ local function convert(v, targetType)
         return BrickColor.new(tostring(v))
     elseif targetType == "UDim2" then
         if type(v) == "table" then return UDim2.new(v[1], v[2], v[3], v[4]) end
-        local s = tostring(v):gsub("[{}]", "")
-        local parts = {}
+        local s = tostring(v):gsub("[{{}}]", "")
+        local parts = {{}}
         for p in s:gmatch("([^,]+)") do table.insert(parts, tonumber(p)) end
         if #parts == 4 then return UDim2.new(parts[1], parts[2], parts[3], parts[4]) end
         return UDim2.new(0,0,0,0)
@@ -61,7 +61,7 @@ local function convert(v, targetType)
         return v
     elseif targetType == "CFrame" then
         if type(v) == "table" then return CFrame.new(unpack(v)) end
-        local parts = {}
+        local parts = {{}}
         for p in tostring(v):gmatch("([^,]+)") do table.insert(parts, tonumber(p)) end
         if #parts == 3 then return CFrame.new(parts[1], parts[2], parts[3]) end
         if #parts >= 12 then return CFrame.new(unpack(parts)) end
@@ -73,8 +73,8 @@ end
 local function createRecursive(def, p)
     local cls = def.class_name
     local name = def.name or cls
-    local properties = def.properties or {}
-    local kids = def.children or {}
+    local properties = def.properties or {{}}
+    local kids = def.children or {{}}
     
     local newObj = Instance.new(cls)
     newObj.Name = name
@@ -113,12 +113,12 @@ local function createRecursive(def, p)
 end
 
 local s, obj = pcall(function()
-    return createRecursive({class_name="{class_name}", name="{name}", properties=props, children=children}, parent)
+    return createRecursive({{class_name="{class_name}", name="{name}", properties=props, children=children}}, parent)
 end)
 
 if s then
-    print("Created " .. obj.ClassName .. " '" .. obj.Name .. "' at " .. obj:GetFullName())
+    return "Created " .. obj.ClassName .. " '" .. obj.Name .. "' at " .. obj:GetFullName()
 else
-    print("Error creating instance: " .. tostring(obj))
+    return "Error creating instance: " .. tostring(obj)
 end
 

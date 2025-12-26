@@ -7,5 +7,5 @@ for i = startIdx, #logs do
     local log = logs[i]
     result = result .. "[" .. log.messageType.Name .. "] " .. log.message .. "\n"
 end
-print(result)
+return result
 

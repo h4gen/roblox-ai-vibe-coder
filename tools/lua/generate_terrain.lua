@@ -8,7 +8,7 @@ local biome = "{biome}"
 
 local function getGround(pos)
     local params = RaycastParams.new()
-    params.FilterDescendantsInstances = {workspace:FindFirstChild("Baseplate")}
+    params.FilterDescendantsInstances = {{workspace:FindFirstChild("Baseplate")}}
     params.FilterType = Enum.RaycastFilterType.Include
     local ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), params)
     if not ray then
@@ -40,10 +40,17 @@ for x = -size.X/2, size.X/2, 4 do
     end
 end
 
+-- Wait for terrain to settle (physics and voxels)
+task.wait(1)
+
 -- Spawn Recovery: Snap SpawnLocation to surface
 local spawn = workspace:FindFirstChildWhichIsA("SpawnLocation", true)
 if spawn then
-    local ray = workspace:Raycast(spawn.Position + Vector3.new(0, 100, 0), Vector3.new(0, -200, 0))
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {{spawn}}
+    
+    local ray = workspace:Raycast(spawn.Position + Vector3.new(0, 500, 0), Vector3.new(0, -1000, 0), params)
     if ray then
         spawn.Position = ray.Position + Vector3.new(0, spawn.Size.Y/2, 0)
     else

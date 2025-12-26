@@ -10,7 +10,7 @@ local function getDirection(refPart, targetPos)
     if math.abs(x) > 3 then horizontal = (x > 0 and "to the right" or "to the left") end
     if math.abs(y) > 5 then vertical = (y > 0 and "above" or "below") end
 
-    local result = {}
+    local result = {{}}
     if depth ~= "" then table.insert(result, depth) end
     if horizontal ~= "" then table.insert(result, horizontal) end
     if vertical ~= "" then table.insert(result, vertical) end

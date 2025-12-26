@@ -1,6 +1,6 @@
 # Roblox AI Vibe Coder 🚀
 
-Roblox AI Vibe Coder is an elite integration between **Roblox Studio** and **Google Gemini**, powered by the **Model Context Protocol (MCP)**. It turns the AI from a simple code generator into a proactive, "ground-aware" game engineer that can live-build, debug, and manipulate your Roblox worlds in real-time.
+Roblox AI Vibe Coder is an elite integration between **Roblox Studio** and **Google Gemini**. It turns the AI from a simple code generator into a proactive, "ground-aware" game engineer that can live-build, debug, and manipulate your Roblox worlds in real-time.
 
 ## 🌟 Key Features
 
@@ -8,6 +8,7 @@ Roblox AI Vibe Coder is an elite integration between **Roblox Studio** and **Goo
 - **Voice-Powered Interaction (PTT)**: Hold the **Right Command** key to speak directly to the agent.
 - **Instant Interruption**: Don't wait for the agent to finish; you can interrupt a thinking loop or a tool execution at any time by speaking.
 - **Ground-Aware Building**: Integrated spatial logic ensures that spawned objects, NPCs, and assets automatically snap to the terrain surface.
+- **Polling Architecture**: No complex binary bridges required. Uses a lightweight Roblox Studio plugin and a local FastAPI server.
 - **Rich Toolset**:
   - **Hierarchy Inspection**: Deep-dive into any Service tree.
   - **Scripting Excellence**: Source reading, overwriting, and Cursor-style patching.
@@ -22,20 +23,19 @@ Roblox AI Vibe Coder is an elite integration between **Roblox Studio** and **Goo
 
 ## 🏗️ Architecture
 
-The project consists of three main layers:
+The project uses a **Local Bridge Architecture** to communicate with Roblox Studio:
 
-1.  **Orchestrator (`roblox_ai.py`)**: An event-driven brain built with Python 3.11's `asyncio.TaskGroup`. It manages a central event queue for text and voice, handling real-time interruptions and Gemini 3 Flash multimodal sessions.
-2.  **Virtual Tool Layer (`tools/`)**: Definitions and Lua templates that map high-level AI actions (like `generate_procedural_terrain`) to optimized Luau execution.
-3.  **Roblox Studio MCP Server**: A binary (e.g., `rbx-studio-mcp`) that acts as a bridge, receiving Luau code from the orchestrator and executing it directly inside the active Studio session.
+1.  **Orchestrator (`roblox_ai.py`)**: The brain. It handles user input (text/voice), manages the Gemini session, converts tool calls into Lua, and pushes them to the Bridge Server.
+2.  **Bridge Server (`server.py`)**: A FastAPI-powered middleman that manages a command queue and stores execution results.
+3.  **Roblox Plugin (`plugin/Main.lua`)**: A Lua plugin running inside Roblox Studio that polls the Bridge Server for new commands and executes them in real-time.
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 
-1.  **Roblox Studio MCP**: You must have the Roblox Studio MCP bridge installed and running.
-    - Default path expected: `/Applications/RobloxStudioMCP.app/Contents/MacOS/rbx-studio-mcp`
-2.  **Google Gemini API Key**: Obtain a key from [Google AI Studio](https://aistudio.google.com/).
-3.  **Python 3.11+**: Required for `asyncio.TaskGroup` and structured concurrency.
+1.  **Google Gemini API Key**: Obtain a key from [Google AI Studio](https://aistudio.google.com/).
+2.  **Python 3.11+**: Required for `asyncio.TaskGroup` and structured concurrency.
+3.  **Roblox Studio**: With "Allow HTTP Requests" enabled in Game Settings.
 
 ### Installation
 
@@ -50,19 +50,31 @@ uv sync
 
 ### Configuration
 
-Create a `.env` file in the root directory:
+1. Create a `.env` file in the root directory:
+   ```env
+   GEMINI_API_KEY=your_api_key_here
+   ```
 
-```env
-GEMINI_API_KEY=your_api_key_here
-```
+2. **Install the Roblox Plugin**:
+   - Copy the contents of `plugin/Main.lua` into a new **Local Plugin** in Roblox Studio.
+   - Alternatively, drag the `plugin` folder into the `Plugins` directory of your Roblox installation.
 
 ### Running the Agent
 
-Start the interactive session:
+You need to run two components:
 
-```bash
-uv run roblox_ai.py
-```
+1.  **Start the Bridge Server**:
+    ```bash
+    uv run server.py
+    ```
+
+2.  **Start the Orchestrator**:
+    ```bash
+    uv run roblox_ai.py
+    ```
+
+3.  **In Roblox Studio**:
+    - Click the **"Connect"** button in the "Vibe Coder" toolbar.
 
 **How to interact:**
 - **Type**: Enter commands normally at the `> ` prompt.
@@ -127,4 +139,3 @@ Once connected, you can talk to the agent:
 
 ---
 *Built for engineers who value simplicity, robustness, and the "vibe" of building.*
-

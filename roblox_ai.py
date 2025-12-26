@@ -50,6 +50,7 @@ from tools.lua_scripts import (
     SEARCH_MARKETPLACE_LUA,
     REPARENT_INSTANCE_LUA,
     CONNECT_PARTS_LUA,
+    CONFIGURE_LIGHTING_LUA,
 )
 
 # Load environment variables from .env
@@ -174,30 +175,28 @@ class RobloxAIWrapper:
     async def _handle_tool_call(self, tc):
         """Executes a single tool call by sending it to the local API server."""
 
+        def to_lua_value(v):
+            if isinstance(v, bool):
+                return "true" if v else "false"
+            elif isinstance(v, (int, float)):
+                return str(v)
+            elif isinstance(v, str):
+                return f"[===[{v}]===]"
+            elif isinstance(v, dict):
+                items = []
+                for k, val in v.items():
+                    items.append(f'["{k}"] = {to_lua_value(val)}')
+                return "{" + ", ".join(items) + "}"
+            elif isinstance(v, list):
+                items = [to_lua_value(item) for item in v]
+                return "{" + ", ".join(items) + "}"
+            else:
+                return f'"{str(v)}"'
+
         def dict_to_lua_table(d):
-            if not d:
-                return "{}"
-            items = []
-            for k, v in d.items():
-                key_str = f'["{k}"]'
-                if isinstance(v, bool):
-                    val_str = "true" if v else "false"
-                elif isinstance(v, (int, float)):
-                    val_str = str(v)
-                elif isinstance(v, str):
-                    val_str = f"[===[{v}]===]"
-                elif isinstance(v, dict):
-                    val_str = dict_to_lua_table(v)
-                elif isinstance(v, list):
-                    val_str = (
-                        "{"
-                        + ", ".join([dict_to_lua_table(item) for item in v])
-                        + "}"
-                    )
-                else:
-                    val_str = f'"{str(v)}"'
-                items.append(f"{key_str} = {val_str}")
-            return "{" + ", ".join(items) + "}"
+            if not isinstance(d, dict):
+                return to_lua_value(d)
+            return to_lua_value(d)
 
         def fix_path(path):
             if not path or not isinstance(path, str):
@@ -389,11 +388,15 @@ class RobloxAIWrapper:
             children = tc.args.get("children", [])
 
             def children_to_lua(kids):
-                if not kids:
+                if not kids or not isinstance(kids, list):
                     return "{}"
                 items = []
                 for kid in kids:
+                    if not isinstance(kid, dict):
+                        continue
                     k_cls = kid.get("class_name")
+                    if not k_cls:
+                        continue
                     k_name = kid.get("name", k_cls)
                     k_props = dict_to_lua_table(kid.get("properties", {}))
                     k_kids = children_to_lua(kid.get("children", []))
@@ -498,7 +501,7 @@ class RobloxAIWrapper:
                 count=tc.args.get("count", 10),
                 radius=tc.args.get("radius", 100),
                 align_to_surface=str(
-                    tc.args.get("align_to_surface", True)
+                    tc.args.get("align_to_surface", False)
                 ).lower(),
                 random_rotation=str(
                     tc.args.get("random_rotation", True)
@@ -518,7 +521,7 @@ class RobloxAIWrapper:
 
         elif tc.name == "get_spatial_summary":
             print(f"[*] Fetching relative spatial summary...")
-            lua_command = GET_SPATIAL_SUMMARY_LUA
+            lua_command = GET_SPATIAL_SUMMARY_LUA.format()
 
         elif tc.name == "connect_parts":
             print(f"[*] Connecting parts...")
@@ -529,6 +532,11 @@ class RobloxAIWrapper:
                 axis=tc.args.get("axis", "Y"),
                 anchor_mode=tc.args.get("anchor_mode", "Center"),
             )
+
+        elif tc.name == "configure_lighting":
+            preset = tc.args.get("preset", "RealisticDay")
+            print(f"[*] Configuring lighting to preset: {preset}...")
+            lua_command = CONFIGURE_LIGHTING_LUA.format(preset=preset)
 
         elif tc.name == "run_code":
             cmd = tc.args.get("command") or tc.args.get("code")
@@ -550,25 +558,22 @@ class RobloxAIWrapper:
         return types.GenerateContentConfig(
             tools=[types.Tool(function_declarations=gemini_tools)],
             system_instruction=(
-                "You are an Elite Roblox Studio Game Engineer and AI Agent. You don't just write code; you build and debug live game worlds.\n\n"
+                "You are an Elite Roblox Studio Game Engineer and AI Agent. You don't just write code; you build high-fidelity, atmospheric game worlds.\n\n"
                 "YOUR CORE PRINCIPLES:\n"
-                "1. SMART CREATION: Use `create_instance` with the `children` parameter to build entire UI hierarchies (ScreenGui -> Frame -> TextLabel) in a SINGLE step. Do not create objects one by one.\n"
-                "2. TRUST YOUR TOOLS: Your building tools (`smart_setup_asset`, `create_instance`) have built-in Ground-Awareness. They automatically snap objects to the terrain surface. You do NOT need to calculate Y-coordinates for placement. Focus on X and Z.\n"
-                "3. FORGIVING SYNTAX: You can use simple property values. Send 'Red' instead of 'Color3.fromRGB(255,0,0)'. Send '{0.5,0,0.5,0}' for UDim2. The system handles the conversion for you.\n"
-                "4. ASSET WORKFLOW: \n"
-                "   - To use an asset: 1) `search_marketplace('Sword')`. 2) Pick an ID. 3) `smart_setup_asset(id=...)`.\n"
-                "   - `smart_setup_asset` AUTOMATICALLY puts Tools in StarterPack and NPCs in ServerStorage. You rarely need to move them manually.\n"
-                "   - Only use `reparent_instance` if you have a specific non-standard goal (e.g., 'Give this specific Zombie a Sword').\n"
+                "1. SMART CREATION: Use `create_instance` with the `children` parameter to build hierarchies. Use this for UI and mechanical structures.\n"
+                "2. QUALITY ASSETS: Always prefer `smart_setup_asset` for environmental objects (Trees, Graves, Buildings). If a search for 'Tombstone' fails, you MUST retry with 3 synonyms (e.g., 'Grave', 'Gravestone', 'Old Stone') before concluding the asset is unavailable. DO NOT build crude part-based versions (cylinders/blocks) for scenery. The player wants a professional look.\n"
+                "3. GROUND AWARENESS: Your building tools (`smart_setup_asset`, `create_instance`) automatically snap to the ground. For `scatter_objects`, use `align_to_surface=false` for man-made structures (Houses, Graves) and growing things (Trees) to keep them vertical and embedded. Use `align_to_surface=true` only for debris or rocks that should tilt with the hill.\n"
+                "4. ATMOSPHERE & LIGHTING: Use `configure_lighting` to set a base mood. TRUST THE PRESETS. Do not manually override `Brightness`, `Ambient`, or `Fog` properties immediately after calling a preset, as they are professionally tuned. To create 'cool atmosphere', place Neon parts with `PointLight` children around the map (e.g., glowing green orbs in a graveyard).\n"
                 "5. CONTEXT AWARENESS: Use 'get_studio_state' to see if you are in Edit Mode or Play Mode. Use 'get_spatial_summary' frequently to 'see' the world.\n"
                 "6. DEBUGGING: Be proactive. If an asset fails to load or a property seems wrong, check the logs. Use `edit_script_source` to fix bugs immediately.\n"
-                "7. SPATIAL LOGIC: Use `get_spatial_summary` to understand surroundings. +X is Right, -X is Left, +Y is Up, -Y is Down, -Z is Front, +Z is Back.\n"
-                "8. SCRIPT EDITING: The system now pre-validates syntax. If you make a typo, the tool will reject the edit and tell you why. Fix it and try again.\n"
-                "9. PHYSICS: Use `connect_parts` for all mechanical joints (welds, hinges). Do not try to manually create Attachments and Constraints with `create_instance`.\n\n"
+                "7. SCRIPT EDITING: The system pre-validates syntax. If you make a typo, fix it and try again.\n"
+                "8. PHYSICS: Use `connect_parts` for all mechanical joints (welds, hinges).\n"
+                "9. ROBUST SCRIPTING: When spawning Models, NEVER assume `PrimaryPart` is set. In your scripts, explicitely check `if not clone.PrimaryPart then clone.PrimaryPart = clone:FindFirstChild('HumanoidRootPart') end` before moving them.\n\n"
                 "WORKFLOW:\n"
                 "- UI Design: Create the full structure in one `create_instance` call.\n"
                 "- Building: Use `generate_procedural_terrain` then `smart_setup_asset`. Objects will land on the ground automatically.\n"
-                "- Deployment: Use 'publish_game' when the user is happy (requires confirmation).\n\n"
-                "CRITICAL: You are an expert. Don't ask for permission to use standard patterns. Just build it."
+                "- Deployment: Use 'publish_game' when the user is happy.\n\n"
+                "CRITICAL: You are an expert. Don't be a lazy builder. Aim for high visual quality and natural placement."
             ),
             thinking_config=types.ThinkingConfig(
                 include_thoughts=True,

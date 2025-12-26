@@ -11,7 +11,7 @@ end
 
 local function getGround(pos)
     local params = RaycastParams.new()
-    params.FilterDescendantsInstances = {workspace:FindFirstChild("Baseplate")}
+    params.FilterDescendantsInstances = {{workspace:FindFirstChild("Baseplate")}}
     params.FilterType = Enum.RaycastFilterType.Include
     local ray = workspace:Raycast(pos + Vector3.new(0, 50, 0), Vector3.new(0, -100, 0), params)
     if not ray then
@@ -26,7 +26,7 @@ local success, result = pcall(function()
     local search = InsertService:GetFreeModels(query, 0)
     if not search then error("Marketplace search returned nil for query: " .. query) end
     
-    local items = {}
+    local items = {{}}
     if type(search) == "table" then
         if search.Results then items = search.Results
         elseif search[1] and search[1].Results then items = search[1].Results
@@ -35,15 +35,48 @@ local success, result = pcall(function()
         items = search:GetCurrentPage()
     end
     
-    -- Robust key detection for the first item
-    local firstItem = (type(items) == "table" and items[1]) or (type(items) == "table" and items) or {}
-    local assetId = firstItem.AssetId or firstItem.AssetID or firstItem.Id or firstItem.ID
+    if not items or #items == 0 or (type(items) == "table" and #items >= 1 and items[1] == nil) then
+        error("No assets found for query: " .. query)
+    end
+
+    local model = nil
+    local lastError = "Unknown Error"
     
-    if not assetId then
-        error("Smart Setup: No valid Asset ID found in search results for '" .. query .. "'.")
+    local function loadAsset(id)
+        local s, m = pcall(function() return InsertService:LoadAsset(id) end)
+        if s and m then return m end
+        
+        local s2, objects = pcall(function() return game:GetObjects("rbxassetid://" .. id) end)
+        if s2 and objects and objects[1] then
+            return objects[1]
+        end
+        return nil, m or "Unknown error"
+    end
+
+    -- Try first 5 results
+    for i = 1, math.min(5, #items) do
+        local item = items[i]
+        if item then
+            local assetId = item.AssetId or item.AssetID or item.Id or item.ID
+            
+            if assetId then
+                local m, err = loadAsset(assetId)
+                if m then
+                    model = m
+                    print("Successfully loaded asset ID: " .. assetId)
+                    break
+                else
+                    lastError = tostring(err)
+                    print("Failed to load asset ID " .. assetId .. ": " .. lastError)
+                end
+            end
+        end
     end
     
-    local model = InsertService:LoadAsset(assetId)
+    if not model then
+        error("Failed to load any assets for '" .. query .. "'. Last error: " .. lastError)
+    end
+    
     model.Parent = workspace
     
     local targetPos = toVec3(posStr)
@@ -110,6 +143,7 @@ local success, result = pcall(function()
 end)
 
 if not success then
-    print("Error in smart setup: " .. tostring(result))
+    return "Error in smart setup: " .. tostring(result)
+else
+    return "Successfully setup asset at " .. tostring(result)
 end
-

@@ -7,7 +7,7 @@ local function getParent()
         return game:GetService("StarterGui")
     end
     -- Try to find object by path
-    local segments = {}
+    local segments = {{}}
     for part in string.gmatch(parentPath, "[^%.]+") do
         table.insert(segments, part)
     end

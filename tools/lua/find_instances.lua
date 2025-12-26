@@ -17,5 +17,5 @@ for _, obj in ipairs(root:GetDescendants()) do
         if count >= 50 then break end
     end
 end
-print(results .. "\nTotal found: " .. count)
+return results .. "\nTotal found: " .. count
 

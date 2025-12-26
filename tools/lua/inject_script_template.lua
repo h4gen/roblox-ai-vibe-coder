@@ -2,7 +2,7 @@ local path = "{path}"
 local templateName = "{template_name}" -- "Leaderstats", "TouchKill", "ClickDoor", "AutoRotate"
 
 local function getScript()
-    local segments = {}
+    local segments = {{}}
     for part in string.gmatch(path, "[^%.]+") do
         table.insert(segments, part)
     end
@@ -19,7 +19,7 @@ if not targetScript or not (targetScript:IsA("Script") or targetScript:IsA("Loca
     return "Error: Script not found or invalid at " .. path
 end
 
-local templates = {}
+local templates = {{}}
 
 templates.Leaderstats = [[
 local Players = game:GetService("Players")
@@ -69,8 +69,8 @@ local closedCFrame = door.CFrame
 local openCFrame = door.CFrame * CFrame.Angles(0, math.rad(90), 0)
 
 local tweenInfo = TweenInfo.new(1, Enum.EasingStyle.Bounce)
-local openTween = TweenService:Create(door, tweenInfo, {CFrame = openCFrame})
-local closeTween = TweenService:Create(door, tweenInfo, {CFrame = closedCFrame})
+local openTween = TweenService:Create(door, tweenInfo, {{CFrame = openCFrame}})
+local closeTween = TweenService:Create(door, tweenInfo, {{CFrame = closedCFrame}})
 
 clickDetector.MouseClick:Connect(function()
     if isOpen then

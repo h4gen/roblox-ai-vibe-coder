@@ -17,5 +17,5 @@ local function getHierarchy(obj, depth, maxDepth)
     return result
 end
 local s = game:GetService("{service}")
-if s then print(getHierarchy(s, 0, {depth})) else print("Error: Service '{service}' not found.") end
+if s then return getHierarchy(s, 0, {depth}) else return "Error: Service '{service}' not found." end
 

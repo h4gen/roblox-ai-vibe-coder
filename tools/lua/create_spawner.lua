@@ -27,8 +27,20 @@ local success, err = pcall(function()
     
     local spawnerScript = Instance.new("Script")
     spawnerScript.Name = containerName .. "_Spawner"
+    
+    -- Robustly determine service and name
+    local serviceName = "ServerStorage"
+    if template:IsDescendantOf(game.ReplicatedStorage) then
+        serviceName = "ReplicatedStorage"
+    elseif template:IsDescendantOf(workspace) then
+        serviceName = "Workspace"
+    end
+    
+    local templateName = template.Name
+    
     spawnerScript.Source = string.format([[
-        local template = %s
+        local service = game:GetService("%s")
+        local template = service:WaitForChild("%s")
         local folder = workspace:WaitForChild("%s")
         local interval = %f
         local maxCount = %d
@@ -42,8 +54,18 @@ local success, err = pcall(function()
                 local x = center.X + (math.random() - 0.5) * radius * 2
                 local z = center.Z + (math.random() - 0.5) * radius * 2
                 clone.Parent = folder
+                
+                -- ROBUSTNESS FIX: Ensure PrimaryPart
+                if clone:IsA("Model") and not clone.PrimaryPart then
+                    clone.PrimaryPart = clone:FindFirstChild("HumanoidRootPart") or clone:FindFirstChild("Torso") or clone:FindFirstChildWhichIsA("BasePart")
+                end
+
                 if clone:IsA("Model") then
-                    clone:MoveTo(Vector3.new(x, center.Y + 50, z))
+                    if clone.PrimaryPart then
+                        clone:SetPrimaryPartCFrame(CFrame.new(Vector3.new(x, center.Y + 50, z)))
+                    else
+                        clone:MoveTo(Vector3.new(x, center.Y + 50, z))
+                    end
                 else
                     clone.Position = Vector3.new(x, center.Y + 50, z)
                 end
@@ -51,11 +73,19 @@ local success, err = pcall(function()
                 -- Simple ground detection
                 local ray = workspace:Raycast(Vector3.new(x, center.Y + 100, z), Vector3.new(0, -200, 0))
                 if ray then
-                    if clone:IsA("Model") then clone:MoveTo(ray.Position) else clone.Position = ray.Position end
+                    if clone:IsA("Model") then 
+                        if clone.PrimaryPart then
+                             clone:SetPrimaryPartCFrame(CFrame.new(ray.Position + Vector3.new(0, clone:GetExtentsSize().Y/2, 0)))
+                        else
+                             clone:MoveTo(ray.Position) 
+                        end
+                    else 
+                        clone.Position = ray.Position + Vector3.new(0, clone.Size.Y/2, 0)
+                    end
                 end
             end
         end
-    ]], template:GetFullName(), containerName, interval, maxCount, center.X, center.Y, center.Z, radius)
+    ]], serviceName, templateName, containerName, interval, maxCount, center.X, center.Y, center.Z, radius)
     
     spawnerScript.Parent = workspace
 end)
@@ -65,4 +95,3 @@ if success then
 else
     print("Error creating spawner: " .. tostring(err))
 end
-
